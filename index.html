@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#d1e1c8">
+<meta name="description" content="Episteme 知屿 — Student-led learning community">
+<title>Episteme 知屿</title>
+<link rel="icon" href="assets/logo.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site-header">
+  <a class="brand" href="#/"><img src="assets/logo.png"><span><b>Episteme 知屿</b><small>TRUE KNOWLEDGE BELONGS TO NO ONE.</small></span></a>
+  <nav id="nav"><a href="#/">首页</a><a href="#/community">讨论群</a><a href="#/courses">录课</a><a href="#/library">资源库</a><a href="#/about">关于我们</a></nav>
+  <div class="head-actions"><button class="icon" id="searchBtn">⌕</button><button class="outline" id="authBtn">登录 / 注册</button><button class="menu" id="menuBtn">☰</button></div>
+</header>
+<div id="mobileNav" class="mobile-nav"><a href="#/">首页</a><a href="#/community">讨论群</a><a href="#/courses">录课</a><a href="#/library">资源库</a><a href="#/about">关于我们</a></div>
+<div id="searchPanel" class="search-panel"><input id="globalSearch" placeholder="搜索问题、课程、资源……"><button id="closeSearch">关闭</button><div id="searchResults"></div></div>
+<main id="main"></main>
+<footer><div class="footer-inner"><div class="footer-brand"><img src="assets/logo.png"><div><b>Episteme 知屿</b><span>Student-led learning community</span></div></div><div class="footer-links"><a href="#/about">关于</a><a href="#/community">讨论</a><a href="#/courses">录课</a><a href="#/library">资源</a></div><p>© 2026 Episteme 知屿 · Ask → Discuss → Understand → Preserve → Share</p></div></footer>
+<div id="modalRoot"></div><div id="toast"></div>
+<script src="config.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
