@@ -1,13 +1,76 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
 const CFG=window.EPISTEME_CONFIG||{};
-const sb=createClient(CFG.SUPABASE_URL,CFG.SUPABASE_PUBLISHABLE_KEY);
+const configured=CFG.SUPABASE_URL && CFG.SUPABASE_PUBLISHABLE_KEY;
+const sb=configured?createClient(CFG.SUPABASE_URL,CFG.SUPABASE_PUBLISHABLE_KEY):null;
 
 function modal(title,body){
  const root=document.getElementById("modalRoot");
  if(!root)return;
  root.innerHTML=`<div class="backdrop" id="backdrop"><div class="modal"><div class="modal-head"><h3>${title}</h3><button id="recoveryClose">×</button></div>${body}</div></div>`;
  document.getElementById("recoveryClose")?.addEventListener("click",()=>root.innerHTML="");
+}
+
+function showAuthMessage(message,type="error"){
+ const form=document.getElementById("authForm");
+ if(!form)return;
+ let box=document.getElementById("authFeedback");
+ if(!box){
+   box=document.createElement("div");
+   box.id="authFeedback";
+   box.style.cssText="margin:12px 0 0;padding:11px 13px;border-radius:10px;font-size:14px;line-height:1.5;text-align:left;border:1px solid rgba(0,0,0,.08);";
+   form.prepend(box);
+ }
+ box.textContent=message;
+ box.style.background=type==="success"?"rgba(104,143,105,.12)":"rgba(180,100,90,.10)";
+ box.style.color=type==="success"?"#416244":"#8a4038";
+ box.style.borderColor=type==="success"?"rgba(65,98,68,.18)":"rgba(138,64,56,.16)";
+}
+
+function getFormInputs(form){
+ const inputs=[...form.querySelectorAll("input")];
+ const password=inputs.find(i=>i.type==="password");
+ const email=inputs.find(i=>i.type==="email");
+ const text=inputs.find(i=>i.type==="text");
+ return {inputs,password,email,text};
+}
+
+function isSignupMode(form){
+ const text=(form.innerText||"").toLowerCase();
+ return text.includes("注册") && !text.includes("登录后") || [...form.querySelectorAll("button")].some(b=>/注册|创建账号|sign up/i.test(b.textContent||""));
+}
+
+async function validateAuthSubmit(e){
+ if(!sb)return;
+ const form=e.target;
+ if(!form||form.id!=="authForm")return;
+ const {password,email,text}=getFormInputs(form);
+ const identifier=(text?.value||email?.value||"").trim();
+ const signup=isSignupMode(form);
+ if(!identifier)return;
+
+ // Registration: stop duplicate usernames before Supabase is called.
+ if(signup && text?.value.trim()){
+   const username=text.value.trim();
+   const {data,error}=await sb.from("profiles").select("id").ilike("username",username).limit(1).maybeSingle();
+   if(!error&&data){
+     e.preventDefault();
+     e.stopImmediatePropagation();
+     showAuthMessage("这个用户名已被使用，请换一个用户名。","error");
+     return;
+   }
+ }
+
+ // Login with a username: give a useful message before a password check.
+ if(!signup && text?.value.trim() && !identifier.includes("@")){
+   const {data,error}=await sb.from("profiles").select("id").ilike("username",identifier).limit(1).maybeSingle();
+   if(!error&&!data){
+     e.preventDefault();
+     e.stopImmediatePropagation();
+     showAuthMessage("用户名不存在，请检查用户名或先注册。","error");
+     return;
+   }
+ }
 }
 
 async function forgotPassword(){
@@ -40,9 +103,14 @@ function enhanceAuth(){
  window.auth=()=>{
    originalAuth();
    setTimeout(()=>{
-     if(document.getElementById("forgotPassword"))return;
      const form=document.getElementById("authForm");
      if(!form)return;
+     if(!form.dataset.feedbackBound){
+       // Capture first so our validation can stop the original submit handler when needed.
+       form.addEventListener("submit",validateAuthSubmit,true);
+       form.dataset.feedbackBound="1";
+     }
+     if(document.getElementById("forgotPassword"))return;
      const wrap=document.createElement("div");
      wrap.style.cssText="text-align:center;margin-top:13px";
      const btn=document.createElement("button");
@@ -57,6 +125,16 @@ function enhanceAuth(){
  };
  window.__epistemeAuthEnhanced=true;
  return true;
+}
+
+// Give the user immediate, human-readable feedback when Supabase reports an auth result.
+if(sb){
+ sb.auth.onAuthStateChange((event,session)=>{
+   if(event==="SIGNED_IN"&&session) {
+     showAuthMessage("登录成功，欢迎回来。","success");
+     setTimeout(()=>document.getElementById("modalRoot")?.replaceChildren(),650);
+   }
+ });
 }
 
 let tries=0;
