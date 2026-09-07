@@ -1,0 +1,250 @@
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+const C = window.EPISTEME_CONFIG || {};
+const sb = createClient(C.SUPABASE_URL, C.SUPABASE_PUBLISHABLE_KEY);
+const BUCKET = "episteme-courses";
+let currentUser = null;
+let currentProfile = null;
+let currentCourses = [];
+let currentLessons = [];
+let mounted = false;
+
+const esc = (s) => String(s ?? "").replace(/[&<>\"']/g, (m) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;"
+}[m]));
+
+const isCoordinator = () => currentProfile?.role === "coordinator";
+
+async function loadStorageData() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return false;
+  currentUser = session.user;
+
+  const profileResult = await sb.from("profiles").select("id,username,role").eq("id", currentUser.id).maybeSingle();
+  currentProfile = profileResult.data || null;
+  if (!currentProfile || !["coordinator", "subject_manager"].includes(currentProfile.role)) return false;
+
+  const [coursesResult, lessonsResult, managersResult] = await Promise.all([
+    sb.from("courses").select("id,title,description,subject_id,course_type,status,subjects(name)").order("created_at", { ascending: false }),
+    sb.from("course_lessons").select("id,course_id,title,description,video_url,duration_seconds,lesson_order,storage_path").order("lesson_order"),
+    sb.from("subject_managers").select("user_id,subject_id")
+  ]);
+
+  if (coursesResult.error) throw coursesResult.error;
+  if (lessonsResult.error) throw lessonsResult.error;
+  if (managersResult.error) throw managersResult.error;
+
+  const managedIds = new Set((managersResult.data || [])
+    .filter((x) => x.user_id === currentUser.id)
+    .map((x) => Number(x.subject_id)));
+
+  currentCourses = isCoordinator()
+    ? (coursesResult.data || [])
+    : (coursesResult.data || []).filter((x) => managedIds.has(Number(x.subject_id)));
+  currentLessons = lessonsResult.data || [];
+  return true;
+}
+
+function fmtDuration(seconds) {
+  const n = Number(seconds || 0);
+  if (!n) return "时长未知";
+  const h = Math.floor(n / 3600);
+  const m = Math.floor((n % 3600) / 60);
+  const s = Math.floor(n % 60);
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function getVideoDuration(file) {
+  return new Promise((resolve) => {
+    if (!file.type.startsWith("video/")) return resolve(0);
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      const duration = Number.isFinite(video.duration) ? Math.round(video.duration) : 0;
+      URL.revokeObjectURL(url);
+      resolve(duration);
+    };
+    video.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(0);
+    };
+    video.src = url;
+  });
+}
+
+function lessonPanel() {
+  const options = currentCourses.map((c) => `<option value="${esc(c.id)}">${esc(c.title)} · ${esc(c.subjects?.name || "未分类")}</option>`).join("");
+  return `<div class="admin-card" id="storageLessonPanel" style="margin-top:20px">
+    <h2>视频文件中心</h2>
+    <div class="section-note">课程视频使用 Supabase Storage 的私有 bucket 保存。单个视频最大 1 GB，只允许 MP4 / WebM / MOV / M4V。已发布课程的已关联视频可被登录用户播放；只有 Coordinator 或对应学科负责人可以上传、替换、删除。</div>
+    ${currentCourses.length ? `<form id="lessonUploadForm" class="form-grid">
+      <label>课程<select name="course_id" required>${options}</select></label>
+      <label>Lesson 标题<input name="title" required placeholder="例如：Chapter 1 · Atomic Structure"></label>
+      <label>Lesson 简介<textarea name="description" placeholder="可选"></textarea></label>
+      <label>视频文件<input name="video" type="file" accept="video/mp4,video/webm,video/quicktime,video/x-m4v" required></label>
+      <button class="primary" type="submit" id="lessonUploadBtn">上传视频并创建 Lesson</button>
+      <div id="lessonUploadStatus" class="muted" style="font-size:13px"></div>
+    </form>` : `<div class="empty-admin">请先创建课程，再上传 Lesson 视频。</div>`}
+    <div style="height:22px"></div>
+    <h3 style="margin:0 0 12px">已上传 Lesson</h3>
+    <div class="manager-list" id="lessonList">${renderLessonRows()}</div>
+  </div>`;
+}
+
+function renderLessonRows() {
+  if (!currentLessons.length) return `<div class="empty-admin">暂无 Lesson 视频</div>`;
+  const courseMap = new Map(currentCourses.map((c) => [c.id, c]));
+  const visible = currentLessons.filter((l) => courseMap.has(l.course_id));
+  if (!visible.length) return `<div class="empty-admin">暂无属于你可管理课程的 Lesson</div>`;
+  return visible.map((l) => {
+    const c = courseMap.get(l.course_id);
+    return `<div class="manager-row">
+      <div style="min-width:0">
+        <b>${esc(l.title)}</b>
+        <small>${esc(c.title)} · ${esc(c.subjects?.name || "未分类")} · ${fmtDuration(l.duration_seconds)}${l.storage_path ? " · Storage" : l.video_url ? " · 外部链接" : ""}</small>
+      </div>
+      <div class="admin-actions">
+        ${l.storage_path ? `<button class="mini" data-lesson-view="${esc(l.id)}">预览</button>` : ""}
+        <button class="mini danger" data-lesson-delete="${esc(l.id)}">删除</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function uploadLesson(e) {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const btn = document.getElementById("lessonUploadBtn");
+  const status = document.getElementById("lessonUploadStatus");
+  const data = new FormData(form);
+  const courseId = String(data.get("course_id") || "");
+  const title = String(data.get("title") || "").trim();
+  const description = String(data.get("description") || "").trim();
+  const file = data.get("video");
+  const course = currentCourses.find((c) => c.id === courseId);
+
+  if (!course) return alert("请选择有效课程。");
+  if (!file || !file.size) return alert("请选择视频文件。");
+  if (!/^video\/(mp4|webm|quicktime|x-m4v)$/.test(file.type)) return alert("只支持 MP4、WebM、MOV、M4V 视频。");
+  if (file.size > 1024 * 1024 * 1024) return alert("单个视频不能超过 1 GB。");
+
+  btn.disabled = true;
+  status.textContent = "正在读取视频信息……";
+  const duration = await getVideoDuration(file);
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const path = `${course.id}/${crypto.randomUUID()}-${safeName}`;
+
+  try {
+    status.textContent = "正在上传视频，请不要关闭页面……";
+    const uploadResult = await sb.storage.from(BUCKET).upload(path, file, {
+      cacheControl: "3600",
+      contentType: file.type,
+      upsert: false
+    });
+    if (uploadResult.error) throw uploadResult.error;
+
+    status.textContent = "视频已上传，正在写入课程记录……";
+    const nextOrder = currentLessons
+      .filter((l) => l.course_id === course.id)
+      .reduce((max, l) => Math.max(max, Number(l.lesson_order || 0)), -1) + 1;
+
+    const row = {
+      course_id: course.id,
+      title,
+      description: description || null,
+      duration_seconds: duration,
+      lesson_order: nextOrder,
+      storage_path: path,
+      video_url: null
+    };
+    const insertResult = await sb.from("course_lessons").insert(row);
+    if (insertResult.error) {
+      await sb.storage.from(BUCKET).remove([path]);
+      throw insertResult.error;
+    }
+
+    form.reset();
+    status.textContent = "上传完成。";
+    await refreshPanel();
+  } catch (err) {
+    console.error(err);
+    status.textContent = "上传失败。";
+    alert(`视频上传失败：${err?.message || err}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function viewLesson(id) {
+  const lesson = currentLessons.find((l) => l.id === id);
+  if (!lesson?.storage_path) return;
+  const result = await sb.storage.from(BUCKET).createSignedUrl(lesson.storage_path, 3600);
+  if (result.error) return alert(`无法生成播放链接：${result.error.message}`);
+  const url = result.data?.signedUrl;
+  if (!url) return alert("无法生成播放链接。");
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+async function deleteLesson(id) {
+  const lesson = currentLessons.find((l) => l.id === id);
+  if (!lesson) return;
+  if (!confirm(`确定删除 Lesson「${lesson.title}」？\n视频文件也会从 Storage 删除。`)) return;
+
+  if (lesson.storage_path) {
+    const storageResult = await sb.storage.from(BUCKET).remove([lesson.storage_path]);
+    if (storageResult.error) return alert(`视频文件删除失败：${storageResult.error.message}`);
+  }
+  const dbResult = await sb.from("course_lessons").delete().eq("id", id);
+  if (dbResult.error) return alert(`Lesson 记录删除失败：${dbResult.error.message}`);
+  await refreshPanel();
+}
+
+async function refreshPanel() {
+  await loadStorageData();
+  const old = document.getElementById("storageLessonPanel");
+  if (!old) return;
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = lessonPanel();
+  old.replaceWith(wrapper.firstElementChild);
+  bindPanel();
+}
+
+function bindPanel() {
+  document.getElementById("lessonUploadForm")?.addEventListener("submit", uploadLesson);
+  document.querySelectorAll("[data-lesson-view]").forEach((b) => b.addEventListener("click", () => viewLesson(b.dataset.lessonView)));
+  document.querySelectorAll("[data-lesson-delete]").forEach((b) => b.addEventListener("click", () => deleteLesson(b.dataset.lessonDelete)));
+}
+
+async function mount() {
+  if (mounted) return;
+  if (!document.querySelector("#view")) return;
+  if (!document.querySelector("#view .admin-table")) return;
+  const heading = document.querySelector("#view .admin-card h2");
+  if (!heading || heading.textContent.trim() !== "现有录课") return;
+  try {
+    const ok = await loadStorageData();
+    if (!ok) return;
+    if (document.getElementById("storageLessonPanel")) return;
+    const host = document.querySelector("#view");
+    host.insertAdjacentHTML("beforeend", lessonPanel());
+    bindPanel();
+    mounted = true;
+  } catch (err) {
+    console.error("Storage panel init failed", err);
+  }
+}
+
+const observer = new MutationObserver(() => {
+  if (document.querySelector("#view")) {
+    mounted = false;
+    mount();
+  }
+});
+observer.observe(document.body, { childList: true, subtree: true });
+setTimeout(mount, 500);
+
+sb.auth.onAuthStateChange(() => {
+  mounted = false;
+  setTimeout(mount, 300);
+});
