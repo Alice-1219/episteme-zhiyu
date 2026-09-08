@@ -67,7 +67,7 @@ async function submit(e,root){
   let itemId=null,path=null;
   try{
     const s=await session();if(!s)throw new Error('登录状态已失效，请重新登录。');
-    const {data:item,error:ie}=await sb.from('library_items').insert({subject_id:subjectId,parent_id:null,name,item_type:'file',provider:'supabase',description,mime_type:file.type||null,file_size:file.size,status:'pending',is_hidden:false,created_by:s.user.id}).select('id').single();
+    const {data:item,error:ie}=await sb.from('library_items').insert({subject_id:subjectId,parent_id:null,name,item_type:'file',provider:'supabase',description,mime_type:file.type||null,file_size:file.size,status:'pending',is_hidden:true,created_by:s.user.id}).select('id').single();
     if(ie)throw ie;itemId=item.id;
     const safe=file.name.replace(/[^a-zA-Z0-9._()\- ]/g,'_');path=`nodes/${item.id}/${safe}`;
     progress.textContent='正在上传文件…… 0%';
