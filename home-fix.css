@@ -1,17 +1,4 @@
-/* Home startup + hero cleanup */
+/* Episteme 知屿 — home page cleanup */
+/* Remove the old startup/placeholder artwork so the site opens directly on the real home page. */
 .hero-art .hero-logo{display:none!important}
 .hero-art img[src*="assets/logo"]{display:none!important}
-
-/* Keep the home canvas from appearing empty while data initializes. */
-#main:empty{min-height:70vh}
-.home-boot-fallback{width:min(1180px,92vw);margin:0 auto;padding:92px 0 110px;display:grid;grid-template-columns:1.05fr .95fr;gap:54px;align-items:center}
-.home-boot-fallback .eyebrow{letter-spacing:.18em;font-size:12px;font-weight:700;color:#819486;margin-bottom:18px}
-.home-boot-fallback h1{font-size:clamp(48px,7vw,88px);line-height:.98;letter-spacing:-.055em;margin:0 0 24px;color:#394b42}
-.home-boot-fallback h1 strong{font-weight:800}
-.home-boot-fallback p{max-width:650px;color:#69766f;font-size:17px;line-height:1.85;margin:0}
-.home-boot-fallback .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:30px}
-.home-boot-fallback .boot-art{min-height:390px;border-radius:36px;background:linear-gradient(145deg,#e7eee2,#d9e6e8);position:relative;overflow:hidden}
-.home-boot-fallback .boot-art:before,.home-boot-fallback .boot-art:after{content:"";position:absolute;left:-10%;width:120%;border-radius:50% 50% 0 0}
-.home-boot-fallback .boot-art:before{height:62%;bottom:0;background:#aebfae;transform:rotate(-4deg)}
-.home-boot-fallback .boot-art:after{height:45%;bottom:-8%;background:#78949a;transform:rotate(5deg)}
-@media(max-width:800px){.home-boot-fallback{grid-template-columns:1fr;padding:62px 0 80px}.home-boot-fallback .boot-art{min-height:260px}}
