@@ -1,10 +1,8 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
-import * as tus from "https://cdn.jsdelivr.net/npm/tus-js-client@4.3.1/+esm";
 
 const C=window.EPISTEME_CONFIG||{};
 const sb=createClient(C.SUPABASE_URL,C.SUPABASE_PUBLISHABLE_KEY);
-const BUCKET='episteme-library';
-const projectRef=(()=>{try{return new URL(C.SUPABASE_URL).hostname.split('.')[0]}catch{return ''}})();
+const FUNCTION_URL=`${String(C.SUPABASE_URL||'').replace(/\/$/,'')}/functions/v1/notion-library`;
 const esc=s=>String(s??'').replace(/[&<>\"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#039;'}[m]));
 let open=false;
 
@@ -49,36 +47,22 @@ async function showUpload(){
   root.querySelector('form').onsubmit=e=>submit(e,root);
 }
 
-function uploadTUS(file,path,onProgress){
-  return new Promise(async(resolve,reject)=>{
-    const s=await session();
-    if(!projectRef||!s)return reject(new Error('登录状态无效，请重新登录。'));
-    const u=new tus.Upload(file,{endpoint:`https://${projectRef}.storage.supabase.co/storage/v1/upload/resumable`,retryDelays:[0,3000,5000,10000,20000],headers:{authorization:`Bearer ${s.access_token}`,apikey:C.SUPABASE_PUBLISHABLE_KEY},uploadDataDuringCreation:true,removeFingerprintOnSuccess:true,chunkSize:6*1024*1024,metadata:{bucketName:BUCKET,objectName:path,contentType:file.type||'application/octet-stream',cacheControl:'31536000'},onError:reject,onProgress:(a,b)=>onProgress(Math.round(a/b*100)),onSuccess:resolve});
-    try{const p=await u.findPreviousUploads();if(p.length)u.resumeFromPreviousUpload(p[0]);u.start()}catch(e){reject(e)}
-  });
-}
-
 async function submit(e,root){
   e.preventDefault();
   const form=e.currentTarget,btn=root.querySelector('#epUploadSubmit'),progress=root.querySelector('#epUploadProgress');
   const fd=new FormData(form);const file=fd.get('file');const subjectId=Number(fd.get('subject_id'));const name=String(fd.get('name')||'').trim()||file?.name||'未命名资料';const description=String(fd.get('description')||'').trim()||null;
   if(!file||!file.size)return alert('请选择文件。');if(!subjectId)return alert('请选择所属学科。');
-  btn.disabled=true;progress.textContent='正在创建审核记录……';
-  let itemId=null,path=null;
+  btn.disabled=true;progress.textContent='正在上传并创建审核记录……';
   try{
     const s=await session();if(!s)throw new Error('登录状态已失效，请重新登录。');
-    const {data:item,error:ie}=await sb.from('library_items').insert({subject_id:subjectId,parent_id:null,name,item_type:'file',provider:'supabase',description,mime_type:file.type||null,file_size:file.size,status:'pending',is_hidden:true,created_by:s.user.id}).select('id').single();
-    if(ie)throw ie;itemId=item.id;
-    const safe=file.name.replace(/[^a-zA-Z0-9._()\- ]/g,'_');path=`nodes/${item.id}/${safe}`;
-    progress.textContent='正在上传文件…… 0%';
-    await uploadTUS(file,path,p=>progress.textContent=`正在上传文件…… ${p}%`);
-    const {error:ue}=await sb.from('library_items').update({storage_path:path,updated_at:new Date().toISOString()}).eq('id',item.id);
-    if(ue)throw ue;
+    if(file.size>20*1024*1024)throw new Error('当前版本单文件上限为 20 MB；更大的资料上传通道正在接入。');
+    fd.set('name',name);fd.set('description',description||'');fd.set('subject_id',String(subjectId));
+    const response=await fetch(FUNCTION_URL,{method:'POST',headers:{Authorization:`Bearer ${s.access_token}`,apikey:C.SUPABASE_PUBLISHABLE_KEY},body:fd});
+    const payload=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(payload?.error||`上传失败（${response.status}）`);
     root.querySelector('.lib-modal').innerHTML=`<div class="ep-upload-success"><b>上传成功</b><div class="muted">资料已经进入审核队列，审核通过后会自动公开到对应学科资料库。</div><div style="height:16px"></div><button class="lib-btn primary" id="epUploadDone">完成</button></div>`;
     root.querySelector('#epUploadDone').onclick=()=>{open=false;root.remove()};
   }catch(err){
-    if(path)await sb.storage.from(BUCKET).remove([path]);
-    if(itemId)await sb.from('library_items').delete().eq('id',itemId);
     progress.textContent='';alert(`上传失败：${err?.message||err}`);btn.disabled=false;
   }
 }
