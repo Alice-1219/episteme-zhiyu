@@ -1,309 +1,98 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
-const CONFIG = window.EPISTEME_CONFIG || {};
-const supabase = createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_PUBLISHABLE_KEY);
-
+const C = window.EPISTEME_CONFIG || {};
+const sb = createClient(C.SUPABASE_URL, C.SUPABASE_PUBLISHABLE_KEY);
 const app = document.getElementById("app");
-const logoutButton = document.getElementById("logoutBtn");
+const logoutBtn = document.getElementById("logoutBtn");
+let user = null, profile = null, tab = "resources";
+let subjects = [], managers = [], invites = [], libraryItems = [], resources = [], courses = [], lessons = [];
 
-let session = null;
-let profile = null;
-let currentTab = "resources";
-let subjects = [];
-let managers = [];
-let courses = [];
-let resources = [];
+const esc = v => String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
+const date = v => v ? new Date(v).toLocaleString("zh-CN") : "";
+const size = n => { n=Number(n||0); if(!n)return ""; if(n<1024)return `${n} B`; if(n<1048576)return `${(n/1024).toFixed(1)} KB`; if(n<1073741824)return `${(n/1048576).toFixed(1)} MB`; return `${(n/1073741824).toFixed(2)} GB`; };
+const isCoord = () => profile?.role === "coordinator";
+const managedIds = () => managers.filter(m=>m.user_id===user.id).map(m=>Number(m.subject_id));
+const canManage = id => isCoord() || managedIds().includes(Number(id));
+const subjectName = id => subjects.find(s=>Number(s.id)===Number(id))?.name || "未分类";
+const managerTitle = id => `${subjectName(id)} 学科负责人`;
+const courseLabel = x => ({textbook:"课本内容",ig:"IG 题目讲解",advanced:"专题与进阶"}[x] || x || "课本内容");
 
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+function readerStyle(){
+  if(document.getElementById("epReaderStyle"))return;
+  const s=document.createElement("style");s.id="epReaderStyle";s.textContent=`
+  .ep-reader-back{position:fixed;inset:0;background:rgba(18,25,21,.58);z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px}.ep-reader{width:min(1180px,96vw);height:min(88vh,900px);background:#fff;border-radius:20px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.22)}.ep-reader-head{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid #e8ebe6}.ep-reader-head small{display:block;color:#737b75;margin-top:3px}.ep-reader-body{flex:1;min-height:0;background:#f4f5f2;display:flex;align-items:center;justify-content:center}.ep-reader-body iframe{width:100%;height:100%;border:0}.ep-reader-body img{max-width:100%;max-height:100%;object-fit:contain}.ep-reader-body video{max-width:100%;max-height:100%}.ep-reader-body audio{width:min(700px,90%)}.ep-course-row{border:1px solid #e4e7e1;border-radius:14px;padding:14px;margin-top:10px}.ep-course-row summary{cursor:pointer;list-style:none}.ep-course-row summary::-webkit-details-marker{display:none}.ep-lesson{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 0;border-top:1px solid #edf0eb}.ep-actions{display:flex;gap:7px;flex-wrap:wrap}.ep-badge{display:inline-flex;padding:5px 9px;border-radius:999px;background:#f1f3ef;font-size:12px}.ep-badge.pending{background:#f7f0d9}.ep-badge.ok{background:#e7efdf}.ep-badge.no{background:#f2e8e8}.ep-badge.rereview{background:#e9e6f5}`;document.head.appendChild(s);
 }
 
-function showError(error) {
-  console.error("Episteme admin error:", error);
-  const message = error?.message || String(error || "Unknown error");
-  app.innerHTML = `
-    <div class="admin-card">
-      <h2>后台暂时无法加载</h2>
-      <p class="muted">后台页面已经打开，但数据加载失败。</p>
-      <p class="danger" style="white-space:pre-wrap">${escapeHtml(message)}</p>
-      <button class="mini" id="adminRetry">重新加载</button>
-    </div>
-  `;
-  document.getElementById("adminRetry")?.addEventListener("click", () => location.reload());
+async function boot(){
+  try{readerStyle();if(!C.SUPABASE_URL||!C.SUPABASE_PUBLISHABLE_KEY)throw new Error("网站配置没有正确加载。");const {data:{session},error}=await sb.auth.getSession();if(error)throw error;if(!session){location.href="./#login";return;}user=session.user;const p=await sb.from("profiles").select("id,username,role").eq("id",user.id).maybeSingle();if(p.error)throw p.error;profile=p.data;if(!profile||!["coordinator","subject_manager"].includes(profile.role)){app.innerHTML=`<div class="admin-card"><h2>没有后台权限</h2><p class="muted">只有 Coordinator 和学科负责人可以进入这里。</p><a class="outline" href="./">返回网站</a></div>`;return;}await loadAll();render();}catch(e){showError(e);}
 }
 
-async function getCurrentUser() {
-  const result = await supabase.auth.getSession();
-  if (result.error) throw result.error;
-  if (!result.data.session) return null;
-
-  session = result.data.session;
-
-  const profileResult = await supabase
-    .from("profiles")
-    .select("id, username, role")
-    .eq("id", session.user.id)
-    .maybeSingle();
-
-  if (profileResult.error) throw profileResult.error;
-  profile = profileResult.data;
-  return profile;
+async function loadAll(){
+  const jobs=[
+    sb.from("subjects").select("id,name,code,description").order("name"),
+    sb.from("subject_managers").select("id,user_id,subject_id,created_at,profiles(username),subjects(name,code)").order("created_at",{ascending:false}),
+    sb.from("library_items").select("id,parent_id,subject_id,name,item_type,provider,storage_path,external_url,description,mime_type,file_size,is_hidden,created_by,created_at,updated_at,status,review_stage,approved_by,approved_at,profiles:created_by(username),subjects(name,code)").in("item_type",["file","embed"]).order("created_at",{ascending:false}),
+    sb.from("resources").select("id,title,description,subject_id,topic,resource_type,file_path,external_url,uploader_id,status,created_at,category,rejection_reason,file_size,mime_type,is_hidden,profiles:uploader_id(username),subjects(name,code)").order("created_at",{ascending:false}),
+    sb.from("courses").select("id,title,description,subject_id,teacher_id,course_type,status,is_hidden,created_at,profiles:teacher_id(username),subjects(name,code)").order("created_at",{ascending:false}),
+    sb.from("course_lessons").select("id,course_id,title,video_url,duration_seconds,lesson_order,description,storage_path,video_provider,video_ref").order("lesson_order")
+  ];
+  if(isCoord())jobs.push(sb.from("manager_invites").select("id,code,subject_id,active,created_at,name,role,label,subjects(name,code)").order("created_at",{ascending:false}));
+  const out=await Promise.all(jobs);out.forEach(r=>{if(r.error)throw r.error;});
+  subjects=out[0].data||[];managers=out[1].data||[];libraryItems=out[2].data||[];resources=out[3].data||[];courses=out[4].data||[];lessons=out[5].data||[];invites=isCoord()?(out[6]?.data||[]):[];
+  if(!isCoord()){const ids=new Set(managedIds());subjects=subjects.filter(s=>ids.has(Number(s.id)));managers=managers.filter(m=>ids.has(Number(m.subject_id)));libraryItems=libraryItems.filter(x=>ids.has(Number(x.subject_id))||x.created_by===user.id);resources=resources.filter(x=>ids.has(Number(x.subject_id))||x.uploader_id===user.id);courses=courses.filter(x=>ids.has(Number(x.subject_id)));}
 }
 
-async function loadData() {
-  const [subjectsResult, managersResult, coursesResult, resourcesResult] = await Promise.all([
-    supabase.from("subjects").select("id,name,code").order("name"),
-    supabase.from("subject_managers").select("id,user_id,subject_id,created_at").order("created_at", { ascending: false }),
-    supabase.from("courses").select("id,title,description,subject_id,course_type,status,created_at").order("created_at", { ascending: false }),
-    supabase.from("library_items").select("id,name,description,subject_id,status,review_stage,is_hidden,file_size,mime_type,storage_path,created_at").eq("item_type", "file").order("created_at", { ascending: false })
-  ]);
-
-  if (subjectsResult.error) throw subjectsResult.error;
-  if (managersResult.error) throw managersResult.error;
-  if (coursesResult.error) throw coursesResult.error;
-  if (resourcesResult.error) throw resourcesResult.error;
-
-  subjects = subjectsResult.data || [];
-  managers = managersResult.data || [];
-  courses = coursesResult.data || [];
-  resources = resourcesResult.data || [];
-
-  if (profile.role === "subject_manager") {
-    const managedSubjectIds = new Set(
-      managers
-        .filter((item) => item.user_id === profile.id)
-        .map((item) => Number(item.subject_id))
-    );
-
-    subjects = subjects.filter((item) => managedSubjectIds.has(Number(item.id)));
-    managers = managers.filter((item) => managedSubjectIds.has(Number(item.subject_id)));
-    courses = courses.filter((item) => managedSubjectIds.has(Number(item.subject_id)));
-    resources = resources.filter((item) => managedSubjectIds.has(Number(item.subject_id)));
-  }
+function render(){
+  const tabs=isCoord()?["resources","courses","managers","subjects"]:["resources","courses"];
+  app.innerHTML=`<div class="admin-top"><div><div class="eyebrow">EPISTEME · ADMIN</div><h1>${isCoord()?"Coordinator 后台":(subjects[0]?managerTitle(subjects[0].id):"学科负责人后台")}</h1><p>管理资料、视频课、学科负责人和运营信息。所有写操作都会经过系统权限验证。</p></div><span class="role-pill">${isCoord()?"Coordinator":"学科负责人"}</span></div><div class="admin-tabs">${tabs.map(x=>`<button class="admin-tab ${tab===x?'active':''}" data-tab="${x}">${({resources:"资料审核",courses:"视频课管理",managers:"学科负责人",subjects:"学科管理"})[x]}</button>`).join("")}</div><div id="view"></div>`;
+  bind();renderTab();
 }
+function renderTab(){document.querySelectorAll("[data-tab]").forEach(b=>b.classList.toggle("active",b.dataset.tab===tab));const v=document.getElementById("view");if(!v)return;if(tab==="resources")v.innerHTML=resourcesView();if(tab==="courses")v.innerHTML=coursesView();if(tab==="managers")v.innerHTML=managersView();if(tab==="subjects")v.innerHTML=subjectsView();bind();}
+function statusBadge(x){const s=x.review_stage||x.status||"pending";const label={pending:"待审核",rereview:"重审",approved:"已通过",rejected:"已拒绝"}[s]||s;return `<span class="ep-badge ${s==='approved'?'ok':s==='rejected'?'no':s==='rereview'?'rereview':'pending'}">${label}</span>`;}
 
-function subjectName(subjectId) {
-  const subject = subjects.find((item) => Number(item.id) === Number(subjectId));
-  return subject?.name || "未分类";
+function resourcesView(){
+  const all=libraryItems.map(x=>({kind:"library",...x})).concat(resources.map(x=>({kind:"resource",...x})));const pending=all.filter(x=>(x.review_stage||x.status)==="pending").length;const rereview=all.filter(x=>(x.review_stage||x.status)==="rereview").length;const approved=all.filter(x=>(x.review_stage||x.status)==="approved"&&!x.is_hidden).length;
+  return `<div class="stat-grid"><div class="stat"><small>待审核</small><b>${pending}</b></div><div class="stat"><small>重审</small><b>${rereview}</b></div><div class="stat"><small>已通过</small><b>${approved}</b></div></div><div class="admin-card"><h2>资料审核</h2><div class="section-note">文件、外部资料和迁移后的资料库文件统一在这里审核。点击“查看”直接打开嵌入阅读器。</div>${all.length?`<table class="admin-table"><thead><tr><th>资料</th><th>学科</th><th>上传者</th><th>状态</th><th>操作</th></tr></thead><tbody>${all.map(resourceRow).join("")}</tbody></table>`:`<div class="empty-admin">目前没有资料。</div>`}</div>`;
 }
+function resourceRow(x){const title=x.kind==="library"?x.name:x.title;const subject=x.subjects?.name||subjectName(x.subject_id);const uploader=x.profiles?.username||"成员";const kind=x.kind==="library"?(x.provider==="notion"?"资料库文件":"文件"):(x.resource_type||x.category||"资料");const state=x.review_stage||x.status||"pending";return `<tr><td><b>${esc(title)}</b><br><span class="muted">${esc(kind)}${x.file_size?" · "+size(x.file_size):""}</span></td><td>${esc(subject)}</td><td>${esc(uploader)}</td><td>${statusBadge(x)}</td><td><div class="ep-actions"><button class="mini" data-read-kind="${x.kind}" data-read-id="${x.id}">查看</button>${state!=="approved"?`<button class="mini ok" data-review="${x.id}" data-kind="${x.kind}" data-next="approved">通过</button>`:""}${state!=="rejected"?`<button class="mini no" data-review="${x.id}" data-kind="${x.kind}" data-next="rejected">驳回</button>`:""}${state!=="pending"?`<button class="mini" data-rereview="${x.id}" data-kind="${x.kind}">重审</button>`:""}${x.kind==="library"?`<button class="mini danger" data-delete-lib="${x.id}">删除</button>`:`<button class="mini danger" data-delete-res="${x.id}">删除</button>`}</div></td></tr>`;}
 
-function resourceStatus(item) {
-  if (item.status === "approved" && !item.is_hidden) return "已通过";
-  if (item.review_stage === "rereview") return "重审";
-  if (item.status === "rejected") return "已拒绝";
-  return "待审核";
+function coursesView(){return `<div class="admin-grid"><div class="admin-card"><h2>现有视频课</h2>${courses.length?courses.map(c=>`<details class="ep-course-row"><summary><b>${esc(c.title)}</b> · ${esc(c.subjects?.name||subjectName(c.subject_id))} · ${courseLabel(c.course_type)} · ${esc(c.status||"")}</summary><div class="muted" style="margin:8px 0">${esc(c.description||"")}</div>${lessons.filter(l=>l.course_id===c.id).map(l=>`<div class="ep-lesson"><span><b>${Number(l.lesson_order)+1}. ${esc(l.title)}</b><small class="muted"> · ${esc(l.video_provider||"supabase")}</small></span><span class="ep-actions"><button class="mini" data-read-lesson="${l.id}">查看</button><button class="mini danger" data-delete-lesson="${l.id}">删除</button></span></div>`).join("")||'<div class="empty-admin">暂无 Lesson</div>'}</details>`).join(""):'<div class="empty-admin">目前没有视频课。</div>'}</div><div class="admin-card"><h2>创建视频课</h2><div class="section-note">保留原有三类栏目：课本内容、IG 题目讲解、专题与进阶。</div><form id="courseForm" class="form-grid"><label>课程名称<input name="title" required></label><label>学科<select name="subject_id" required>${subjects.map(s=>`<option value="${s.id}">${esc(s.name)}${s.code?' · '+esc(s.code):''}</option>`).join("")}</select></label><label>栏目<select name="course_type"><option value="textbook">课本内容</option><option value="ig">IG 题目讲解</option><option value="advanced">专题与进阶</option></select></label><label>简介<textarea name="description"></textarea></label><button class="primary">创建课程</button></form><hr><h2 style="margin-top:18px">添加 Lesson / 视频</h2><form id="lessonForm" class="form-grid"><label>课程<select name="course_id" required>${courses.map(c=>`<option value="${c.id}">${esc(c.title)}</option>`).join("")}</select></label><label>Lesson 标题<input name="title" required></label><label>视频来源<select name="video_provider"><option value="bilibili">哔哩哔哩</option><option value="external">其他视频链接</option><option value="supabase">Episteme Storage</option></select></label><label>视频链接 / BV号<input name="video_ref" placeholder="BV... 或视频链接" required></label><label>简介<textarea name="description"></textarea></label><button class="primary">添加 Lesson</button></form></div></div>`;}
+function managersView(){const active=invites.filter(i=>i.active);return `<div class="admin-grid"><div class="admin-card"><h2>学科负责人</h2>${managers.length?managers.map(m=>`<div class="manager-row"><div><b>${esc(m.profiles?.username||m.user_id)}</b><small>${esc(managerTitle(m.subject_id))}</small></div><button class="mini danger" data-remove-manager="${m.id}">移除</button></div>`).join(""):'<div class="empty-admin">目前没有学科负责人。</div>'}</div><div class="admin-card"><h2>负责人邀请码</h2><div class="section-note">每个邀请码只绑定指定学科。负责人登录后领取邀请码，系统自动赋予对应学科的后台权限。</div><form id="inviteForm" class="form-grid"><label>负责学科<select name="subject_id" required>${subjects.map(s=>`<option value="${s.id}">${esc(s.name)}${s.code?' · '+esc(s.code):''}</option>`).join("")}</select></label><button class="primary">生成邀请码</button></form><div style="height:16px"></div>${active.length?active.map(i=>`<div class="manager-row"><div><b style="font-size:18px;letter-spacing:2px">${esc(i.code)}</b><small>${esc(i.subjects?.name||subjectName(i.subject_id))} · ${fmtDate(i.created_at)}</small></div><button class="mini danger" data-revoke-invite="${i.id}">撤销</button></div>`).join(""):'<div class="empty-admin">暂无有效邀请码。</div>'}</div></div>`;}
+function subjectsView(){return `<div class="admin-card"><h2>学科管理</h2><table class="admin-table"><thead><tr><th>学科</th><th>Code</th><th>负责人</th></tr></thead><tbody>${subjects.map(s=>{const ms=managers.filter(m=>Number(m.subject_id)===Number(s.id));return `<tr><td><b>${esc(s.name)}</b></td><td>${esc(s.code||"")}</td><td>${ms.length?ms.map(m=>`${esc(m.profiles?.username||m.user_id)} · ${esc(managerTitle(s.id))}`).join("<br>"):'<span class="muted">未分配</span>'}</td></tr>`}).join("")}</tbody></table></div>`;}
+
+function bind(){
+  document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;renderTab();});
+  document.querySelectorAll("[data-read-kind]").forEach(b=>b.onclick=()=>openResourceReader(b.dataset.readKind,b.dataset.readId));
+  document.querySelectorAll("[data-review]").forEach(b=>b.onclick=()=>reviewItem(b.dataset.kind,b.dataset.review,b.dataset.next));
+  document.querySelectorAll("[data-rereview]").forEach(b=>b.onclick=()=>requestRereview(b.dataset.kind,b.dataset.rereview));
+  document.querySelectorAll("[data-delete-lib]").forEach(b=>b.onclick=()=>deleteLibraryItem(b.dataset.deleteLib));
+  document.querySelectorAll("[data-delete-res]").forEach(b=>b.onclick=()=>deleteResource(b.dataset.deleteRes));
+  document.querySelectorAll("[data-read-lesson]").forEach(b=>b.onclick=()=>openLessonReader(b.dataset.readLesson));
+  document.querySelectorAll("[data-delete-lesson]").forEach(b=>b.onclick=()=>deleteLesson(b.dataset.deleteLesson));
+  document.querySelectorAll("[data-remove-manager]").forEach(b=>b.onclick=()=>removeManager(b.dataset.removeManager));
+  document.querySelectorAll("[data-revoke-invite]").forEach(b=>b.onclick=()=>revokeInvite(b.dataset.revokeInvite));
+  document.getElementById("courseForm")?.addEventListener("submit",createCourse);
+  document.getElementById("lessonForm")?.addEventListener("submit",createLesson);
+  document.getElementById("inviteForm")?.addEventListener("submit",createInvite);
 }
-
-function layout() {
-  const roleTitle = profile.role === "coordinator" ? "Coordinator 后台" : "Subject Manager 后台";
-
-  app.innerHTML = `
-    <div class="admin-top">
-      <div>
-        <div class="eyebrow">EPISTEME · ADMIN</div>
-        <h1>${escapeHtml(roleTitle)}</h1>
-        <p>管理资料、视频课、学科权限和运营信息。所有写操作都会经过系统权限验证。</p>
-      </div>
-      <span class="role-pill">${escapeHtml(profile.role)}</span>
-    </div>
-
-    <div class="admin-tabs">
-      <button class="admin-tab" data-tab="resources">资料审核</button>
-      <button class="admin-tab" data-tab="courses">视频课管理</button>
-      <button class="admin-tab" data-tab="managers">Subject Manager</button>
-      <button class="admin-tab" data-tab="subjects">学科管理</button>
-    </div>
-
-    <div id="adminView"></div>
-  `;
-
-  document.querySelectorAll(".admin-tab").forEach((button) => {
-    button.addEventListener("click", () => {
-      currentTab = button.dataset.tab;
-      renderTab();
-    });
-  });
-
-  renderTab();
-}
-
-function renderTab() {
-  document.querySelectorAll(".admin-tab").forEach((button) => {
-    button.classList.toggle("active", button.dataset.tab === currentTab);
-  });
-
-  const view = document.getElementById("adminView");
-  if (!view) return;
-
-  if (currentTab === "resources") renderResources(view);
-  if (currentTab === "courses") renderCourses(view);
-  if (currentTab === "managers") renderManagers(view);
-  if (currentTab === "subjects") renderSubjects(view);
-}
-
-function renderResources(view) {
-  const pending = resources.filter((item) => resourceStatus(item) === "待审核");
-  const rereview = resources.filter((item) => resourceStatus(item) === "重审");
-  const approved = resources.filter((item) => resourceStatus(item) === "已通过");
-
-  view.innerHTML = `
-    <div class="stat-grid">
-      <div class="stat"><small>待审核</small><b>${pending.length}</b></div>
-      <div class="stat"><small>重审</small><b>${rereview.length}</b></div>
-      <div class="stat"><small>已通过</small><b>${approved.length}</b></div>
-    </div>
-
-    <div class="admin-card">
-      <h2>资料审核队列</h2>
-      <div class="section-note">资料先进入审核队列。审核通过后才会在网站资料库中公开。</div>
-      ${renderResourceRows(resources)}
-    </div>
-  `;
-}
-
-function renderResourceRows(items) {
-  if (!items.length) return '<div class="empty-admin">目前没有资料。</div>';
-
-  return `
-    <table class="admin-table">
-      <thead>
-        <tr>
-          <th>资料</th>
-          <th>学科</th>
-          <th>状态</th>
-          <th>时间</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${items.map((item) => `
-          <tr>
-            <td><b>${escapeHtml(item.name)}</b><br><span class="muted">${escapeHtml(item.mime_type || "")}</span></td>
-            <td>${escapeHtml(subjectName(item.subject_id))}</td>
-            <td>${resourceStatus(item)}</td>
-            <td>${item.created_at ? new Date(item.created_at).toLocaleString("zh-CN") : ""}</td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table>
-  `;
-}
-
-function renderCourses(view) {
-  view.innerHTML = `
-    <div class="admin-card">
-      <h2>视频课管理</h2>
-      <div class="section-note">视频课程目前通过课程记录和第三方视频地址管理。</div>
-      ${courses.length ? `
-        <table class="admin-table">
-          <thead><tr><th>课程</th><th>学科</th><th>分类</th><th>状态</th></tr></thead>
-          <tbody>
-            ${courses.map((course) => `
-              <tr>
-                <td><b>${escapeHtml(course.title)}</b><br><span class="muted">${escapeHtml(course.description || "")}</span></td>
-                <td>${escapeHtml(subjectName(course.subject_id))}</td>
-                <td>${escapeHtml(course.course_type || "textbook")}</td>
-                <td>${escapeHtml(course.status || "")}</td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      ` : '<div class="empty-admin">目前没有视频课。</div>'}
-    </div>
-  `;
-}
-
-function renderManagers(view) {
-  view.innerHTML = `
-    <div class="admin-grid">
-      <div class="admin-card">
-        <h2>Subject Managers</h2>
-        <div class="section-note">这里显示当前账号有权限管理的学科负责人。</div>
-        ${managers.length ? `
-          <div class="manager-list">
-            ${managers.map((manager) => `
-              <div class="manager-row">
-                <div>
-                  <b>${escapeHtml(manager.user_id)}</b>
-                  <small>${escapeHtml(subjectName(manager.subject_id))}</small>
-                </div>
-              </div>
-            `).join("")}
-          </div>
-        ` : '<div class="empty-admin">目前没有 Subject Manager。</div>'}
-      </div>
-      <div class="admin-card">
-        <h2>管理人权限</h2>
-        <p class="muted">邀请码和权限调整功能会在核心后台稳定后重新接入。</p>
-      </div>
-    </div>
-  `;
-}
-
-function renderSubjects(view) {
-  view.innerHTML = `
-    <div class="admin-card">
-      <h2>学科管理</h2>
-      <p class="muted">当前账号可以管理以下学科：</p>
-      <div class="subject-list">
-        ${subjects.length ? subjects.map((subject) => `
-          <div class="subject-list-row" style="cursor:default">
-            <span>
-              <b>${escapeHtml(subject.name)}</b>
-              <small>${escapeHtml(subject.code || "")}</small>
-            </span>
-            <span class="subject-arrow">→</span>
-          </div>
-        `).join("") : '<div class="empty-admin">暂无可管理学科。</div>'}
-      </div>
-    </div>
-  `;
-}
-
-async function boot() {
-  try {
-    if (!CONFIG.SUPABASE_URL || !CONFIG.SUPABASE_PUBLISHABLE_KEY) {
-      throw new Error("网站配置没有正确加载。");
-    }
-
-    const currentUser = await getCurrentUser();
-    if (!currentUser) {
-      location.href = "./#login";
-      return;
-    }
-
-    if (!profile || !["coordinator", "subject_manager"].includes(profile.role)) {
-      app.innerHTML = `
-        <div class="admin-card">
-          <h2>没有后台权限</h2>
-          <p class="muted">只有 Coordinator 和 Subject Manager 可以进入这里。</p>
-          <a class="outline" href="./">返回网站</a>
-        </div>
-      `;
-      return;
-    }
-
-    await loadData();
-    layout();
-  } catch (error) {
-    showError(error);
-  }
-}
-
-logoutButton?.addEventListener("click", async () => {
-  await supabase.auth.signOut();
-  location.href = "./";
-});
-
-window.__EpistemeAdmin = {
-  reload: async () => {
-    await loadData();
-    layout();
-  }
-};
-
+async function reviewItem(kind,id,next){try{if(next==="rejected"){const reason=prompt("请输入驳回原因（可选）：");if(kind==="resource")await updateResourceReview(id,next,reason);else await callLibraryReview(id,next);}else if(kind==="resource")await updateResourceReview(id,next,null);else await callLibraryReview(id,next);await loadAll();renderTab();}catch(e){alert(e.message||"审核失败");}}
+async function callLibraryReview(id,next){const {error}=await sb.rpc("review_library_item",{p_item_id:id,p_status:next});if(error)throw error;}
+async function updateResourceReview(id,next,reason){const patch={status:next,is_hidden:next!=="approved"};if(next==="approved"){patch.approved_by=user.id;patch.approved_at=new Date().toISOString();patch.rejection_reason=null;}if(next==="rejected"&&reason)patch.rejection_reason=reason;const {error}=await sb.from("resources").update(patch).eq("id",id);if(error)throw error;}
+async function requestRereview(kind,id){try{if(kind==="library"){const {error}=await sb.rpc("request_library_item_rereview",{p_item_id:id});if(error)throw error;}else{const {error}=await sb.from("resources").update({status:"pending",is_hidden:true}).eq("id",id);if(error)throw error;}await loadAll();renderTab();}catch(e){alert(e.message||"重审失败");}}
+async function deleteLibraryItem(id){if(!confirm("确定删除这份资料？"))return;const item=libraryItems.find(x=>x.id===id);if(item?.storage_path)await sb.storage.from("episteme-library").remove([item.storage_path]);const {error}=await sb.from("library_items").delete().eq("id",id);if(error)alert(error.message);else{await loadAll();renderTab();}}
+async function deleteResource(id){if(!confirm("确定删除这份资料？"))return;const r=resources.find(x=>x.id===id);if(r?.file_path)await sb.storage.from("episteme-resources").remove([r.file_path]);const {error}=await sb.from("resources").delete().eq("id",id);if(error)alert(error.message);else{await loadAll();renderTab();}}
+async function resourceUrl(item,kind){if(item.external_url)return item.external_url;if(item.storage_path){const bucket=kind==="resource"?"episteme-resources":"episteme-library";const {data,error}=await sb.storage.from(bucket).createSignedUrl(item.storage_path,3600);if(error)throw error;return data?.signedUrl||null;}return null;}
+function openReader(title,url,mime,subtitle="审核预览"){const safe=esc(url);let body=mime?.includes("pdf")?`<iframe src="${safe}"></iframe>`:mime?.startsWith("image/")?`<img src="${safe}">`:mime?.startsWith("video/")?`<video src="${safe}" controls autoplay></video>`:mime?.startsWith("audio/")?`<audio src="${safe}" controls></audio>`:`<iframe src="${safe}"></iframe>`;document.body.insertAdjacentHTML("beforeend",`<div class="ep-reader-back"><div class="ep-reader"><div class="ep-reader-head"><div><b>${esc(title)}</b><small>${esc(subtitle)}</small></div><button class="mini" id="epReaderClose">关闭</button></div><div class="ep-reader-body">${body}</div></div></div>`);document.getElementById("epReaderClose")?.addEventListener("click",()=>document.querySelector(".ep-reader-back")?.remove());}
+async function openResourceReader(kind,id){try{const item=kind==="library"?libraryItems.find(x=>x.id===id):resources.find(x=>x.id===id);if(!item)return;const url=await resourceUrl(item,kind);if(!url){alert("这份资料没有可预览内容。");return;}openReader(item.name||item.title,url,item.mime_type,kind==="library"&&item.provider==="notion"?"资料库嵌入预览":"资料审核预览");}catch(e){alert(e.message||"无法打开资料");}}
+function bilibiliUrl(ref){const m=String(ref||"").match(/BV[0-9A-Za-z]+/i);const b=m?m[0]:ref;return b?`https://player.bilibili.com/player.html?bvid=${encodeURIComponent(b)}&autoplay=0`:null;}
+async function openLessonReader(id){const l=lessons.find(x=>x.id===id);if(!l)return;let url=null;if(l.video_provider==="bilibili")url=bilibiliUrl(l.video_ref||l.video_url);else if(l.video_provider==="external")url=l.video_ref||l.video_url;else if(l.storage_path){const x=await sb.storage.from("episteme-courses").createSignedUrl(l.storage_path,3600);url=x.data?.signedUrl;}else url=l.video_url;if(!url){alert("这个 Lesson 没有可播放的视频。");return;}document.body.insertAdjacentHTML("beforeend",`<div class="ep-reader-back"><div class="ep-reader"><div class="ep-reader-head"><div><b>${esc(l.title)}</b><small>视频课预览 · ${esc(l.video_provider||"supabase")}</small></div><button class="mini" id="epReaderClose">关闭</button></div><div class="ep-reader-body"><iframe src="${esc(url)}" allow="autoplay; fullscreen"></iframe></div></div></div>`);document.getElementById("epReaderClose")?.addEventListener("click",()=>document.querySelector(".ep-reader-back")?.remove());}
+async function createCourse(e){e.preventDefault();const f=new FormData(e.target),sid=Number(f.get("subject_id"));if(!canManage(sid))return alert("你只能管理自己负责的学科。");const {error}=await sb.from("courses").insert({title:f.get("title"),description:f.get("description"),subject_id:sid,teacher_id:user.id,course_type:f.get("course_type"),status:"published",is_hidden:false});if(error)alert(error.message);else{await loadAll();renderTab();}}
+async function createLesson(e){e.preventDefault();const f=new FormData(e.target),cid=f.get("course_id"),course=courses.find(c=>c.id===cid);if(!course||!canManage(course.subject_id))return alert("你没有权限管理这个课程。");const provider=f.get("video_provider"),ref=f.get("video_ref").trim();let videoRef=ref;if(provider==="bilibili"){videoRef=(ref.match(/BV[0-9A-Za-z]+/i)||[])[0]||"";if(!videoRef)return alert("请输入有效的 Bilibili BV 号或视频链接。");}const last=lessons.filter(l=>l.course_id===cid).reduce((m,l)=>Math.max(m,Number(l.lesson_order||0)),-1);const row={course_id:cid,title:f.get("title"),description:f.get("description")||null,duration_seconds:0,lesson_order:last+1,video_provider:provider,video_ref:videoRef,video_url:provider==="external"?ref:null,storage_path:null};const {error}=await sb.from("course_lessons").insert(row);if(error)alert(error.message);else{await loadAll();renderTab();}}
+async function deleteLesson(id){if(!confirm("确定删除这个 Lesson？"))return;const l=lessons.find(x=>x.id===id);if(l?.storage_path)await sb.storage.from("episteme-courses").remove([l.storage_path]);const {error}=await sb.from("course_lessons").delete().eq("id",id);if(error)alert(error.message);else{await loadAll();renderTab();}}
+async function removeManager(id){if(!isCoord())return;const {error}=await sb.from("subject_managers").delete().eq("id",id);if(error)alert(error.message);else{await loadAll();renderTab();}}
+async function createInvite(e){e.preventDefault();if(!isCoord())return;const sid=Number(new FormData(e.target).get("subject_id"));const alphabet="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";const bytes=new Uint32Array(8);crypto.getRandomValues(bytes);let code="";for(const b of bytes)code+=alphabet[b%alphabet.length];const {error}=await sb.from("manager_invites").insert({code,subject_id:sid,active:true,role:"subject_manager",label:managerTitle(sid),name:managerTitle(sid)});if(error)alert(error.message);else{alert(`邀请码已生成：${code}`);await loadAll();renderTab();}}
+async function revokeInvite(id){if(!isCoord())return;const {error}=await sb.from("manager_invites").update({active:false}).eq("id",id);if(error)alert(error.message);else{await loadAll();renderTab();}}
+function showError(e){console.error("Episteme admin error",e);app.innerHTML=`<div class="admin-card"><h2>后台暂时无法加载</h2><p class="muted">后台页面已经打开，但数据加载失败。</p><p class="danger" style="white-space:pre-wrap">${esc(e?.message||e)}</p><button class="mini" id="adminRetry">重新加载</button></div>`;document.getElementById("adminRetry")?.addEventListener("click",()=>location.reload());}
+logoutBtn?.addEventListener("click",async()=>{await sb.auth.signOut();location.href="./";});
+window.__EpistemeAdmin={reload:async()=>{await loadAll();render();}};
 boot();
