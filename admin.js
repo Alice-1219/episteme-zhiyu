@@ -1,8 +1,22 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 const C=window.EPISTEME_CONFIG||{};const sb=createClient(C.SUPABASE_URL,C.SUPABASE_PUBLISHABLE_KEY);const $=s=>document.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 let me=null,subjects=[],managers=[],courses=[],lessons=[],tab='resources',selectedSubject=null,report=null,reportTimer=null;
-async function boot(){const {data:{session}}=await sb.auth.getSession();if(!session){location.href='./#login';return}const {data:profile}=await sb.from('profiles').select('id,username,role').eq('id',session.user.id).maybeSingle();if(!profile||!['coordinator','subject_manager'].includes(profile.role)){$('#app').innerHTML='<div class="admin-card"><h2>没有后台权限</h2><p class="muted">只有 Coordinator 和 Subject Manager 可以进入这里。</p><a class="outline" href="./">返回网站</a></div>';return}me={session,profile};await load();renderShell();bindShell()}
-async function load(){const [s,m,c,l]=await Promise.all([sb.from('subjects').select('id,name,code').order('name'),sb.from('subject_managers').select('id,user_id,subject_id,profiles(username),subjects(name,code)').order('created_at',{ascending:false}),sb.from('courses').select('id,title,description,subject_id,teacher_id,course_type,status,subjects(name,code)').order('created_at',{ascending:false}),sb.from('course_lessons').select('id,course_id,title,description,video_url,video_provider,video_ref,duration_seconds,lesson_order,storage_path').order('lesson_order')]);subjects=s.data||[];managers=m.data||[];courses=c.data||[];lessons=l.data||[]}
+async function boot(){try{const {data:{session},error:sessionError}=await sb.auth.getSession();if(sessionError)throw sessionError;if(!session){location.href='./#login';return}const {data:profile,error:profileError}=await sb.from('profiles').select('id,username,role').eq('id',session.user.id).maybeSingle();if(profileError)throw profileError;if(!profile||!['coordinator','subject_manager'].includes(profile.role)){$('#app').innerHTML='<div class="admin-card"><h2>没有后台权限</h2><p class="muted">只有 Coordinator 和 Subject Manager 可以进入这里。</p><a class="outline" href="./">返回网站</a></div>';return}me={session,profile};await load();renderShell();bindShell()}catch(err){console.error('Episteme admin boot failed',err);$('#app').innerHTML=`<div class="admin-card"><h2>后台暂时无法加载</h2><p class="muted">后台页面本身已经打开，但部分数据请求没有成功。</p><p class="danger" style="white-space:pre-wrap">${esc(err?.message||String(err))}</p><button class="mini" id="adminRetry">重新加载</button></div>`;$('#adminRetry')?.addEventListener('click',()=>location.reload())}}
+async function load(){
+  const results=await Promise.allSettled([
+    sb.from('subjects').select('id,name,code').order('name'),
+    sb.from('subject_managers').select('id,user_id,subject_id,profiles(username),subjects(name,code)').order('created_at',{ascending:false}),
+    sb.from('courses').select('id,title,description,subject_id,teacher_id,course_type,status,subjects(name,code)').order('created_at',{ascending:false}),
+    sb.from('course_lessons').select('id,course_id,title,description,video_url,video_provider,video_ref,duration_seconds,lesson_order,storage_path').order('lesson_order')
+  ]);
+  const [s,m,c,l]=results;
+  subjects=s.status==='fulfilled'&&!s.value.error?(s.value.data||[]):[];
+  managers=m.status==='fulfilled'&&!m.value.error?(m.value.data||[]):[];
+  courses=c.status==='fulfilled'&&!c.value.error?(c.value.data||[]):[];
+  lessons=l.status==='fulfilled'&&!l.value.error?(l.value.data||[]):[];
+  const failed=[['subjects',s],['subject_managers',m],['courses',c],['course_lessons',l]].filter(([,r])=>r.status==='rejected'||r.value?.error);
+  if(failed.length)console.warn('Some admin data failed to load',failed.map(([name,r])=>({table:name,error:r.status==='rejected'?r.reason?.message:r.value?.error?.message})));
+}
 function managedIds(){return new Set(managers.filter(x=>x.user_id===me.session.user.id).map(x=>Number(x.subject_id))}
 function visibleSubjects(){return me.profile.role==='coordinator'?subjects:subjects.filter(x=>managedIds().has(Number(x.id)))}
 function visibleManagers(){const ids=visibleSubjects().map(s=>Number(s.id));return managers.filter(m=>ids.includes(Number(m.subject_id)))}
