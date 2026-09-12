@@ -4,24 +4,16 @@
  */
 (function(){
   const modules=[
-    './app.js',
-    './access.js',
-    './recovery.js',
-    './media-player.js',
-    './library.js',
-    './library-upload-entry.js',
-    './notifications-ui.js',
-    './account-link.js',
-    './courses-ui.js',
-    './question-reference.js',
-    './course-discussion.js',
-    './dashboard.js'
+    './app.js','./access.js','./recovery.js','./media-player.js',
+    './library.js','./library-upload-entry.js','./notifications-ui.js',
+    './account-link.js','./courses-ui.js','./question-reference.js',
+    './course-discussion.js','./dashboard.js'
   ];
 
   function start(){
     const run=async()=>{
       try{
-        for(const src of modules) await import(src);
+        await Promise.all(modules.map(src=>import(src)));
       }catch(error){
         console.error('[Episteme] frontend module failed to load',error);
         const main=document.getElementById('main');
