@@ -1,4 +1,8 @@
 /* Episteme 知屿 — home page cleanup */
-/* Remove the old startup/placeholder artwork so the site opens directly on the real home page. */
+/* Keep the original visual system, but remove page-level explanatory copy. */
 .hero-art .hero-logo{display:none!important}
 .hero-art img[src*="assets/logo"]{display:none!important}
+
+/* Page headers should be title-led, not paragraph-led. */
+.page-hero p{display:none!important}
+.page-hero h1{margin-bottom:0!important}
