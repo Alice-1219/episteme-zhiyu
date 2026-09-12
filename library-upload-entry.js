@@ -5,79 +5,14 @@ const sb=createClient(C.SUPABASE_URL,C.SUPABASE_PUBLISHABLE_KEY);
 const FUNCTION_URL=`${String(C.SUPABASE_URL||'').replace(/\/$/,'')}/functions/v1/notion-library`;
 const esc=s=>String(s??'').replace(/[&<>\"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#039;'}[m]));
 let open=false;
-
-function style(){
-  if(document.getElementById('epUploadEntryStyle'))return;
-  const s=document.createElement('style');s.id='epUploadEntryStyle';s.textContent=`
-  .ep-upload-entry{background:#435d4b!important;color:#fff!important;border-color:#435d4b!important}.ep-upload-entry:hover{background:#354d3d!important}.ep-upload-modal-note{padding:11px 13px;border-radius:11px;background:#f7f5ea;color:#687169;font-size:12px;line-height:1.55}.ep-upload-success{text-align:center;padding:28px 20px}.ep-upload-success b{display:block;font-size:18px;margin-bottom:7px}.ep-upload-progress{font-size:12px;color:#68736b;min-height:18px}
-  `;document.head.appendChild(s);
-}
-
+function style(){if(document.getElementById('epUploadEntryStyle'))return;const s=document.createElement('style');s.id='epUploadEntryStyle';s.textContent=`.ep-upload-entry{background:#435d4b!important;color:#fff!important;border-color:#435d4b!important}.ep-upload-entry:hover{background:#354d3d!important}.ep-upload-modal-note{padding:11px 13px;border-radius:11px;background:#f7f5ea;color:#687169;font-size:12px;line-height:1.55}.ep-upload-success{text-align:center;padding:28px 20px}.ep-upload-success b{display:block;font-size:18px;margin-bottom:7px}.ep-upload-progress{font-size:12px;color:#68736b;min-height:18px}`;document.head.appendChild(s)}
 async function session(){const {data:{session}}=await sb.auth.getSession();return session}
 function subjectFromPage(){const el=document.querySelector('.lib-title h1');const text=el?.textContent?.trim();if(!text||text==='资源库')return null;return (window.__epLibraryUploadSubjects||[]).find(x=>x.name===text)||null}
-
-async function loadSubjects(){
-  const {data,error}=await sb.from('subjects').select('id,name,code').order('name');
-  if(error)throw error;
-  window.__epLibraryUploadSubjects=data||[];
-  return data||[];
-}
-
-function modal(body){
-  const r=document.createElement('div');r.className='lib-modal-back';r.innerHTML=`<div class="lib-modal small"><div class="lib-modal-head"><b>上传资料</b><button class="lib-close">×</button></div>${body}</div>`;
-  r.querySelector('.lib-close').onclick=()=>{open=false;r.remove()};r.onclick=e=>{if(e.target===r){open=false;r.remove()}};document.body.appendChild(r);return r;
-}
-
-async function showUpload(){
-  if(open)return;open=true;style();
-  const s=await session();
-  if(!s){open=false;location.hash='#login';return}
-  let subjects=[];try{subjects=await loadSubjects()}catch(e){open=false;alert(e.message||'无法读取学科列表。');return}
-  const pageSubject=subjectFromPage();
-  const subjectOptions=subjects.map(x=>`<option value="${x.id}" ${pageSubject&&Number(pageSubject.id)===Number(x.id)?'selected':''}>${esc(x.name)}${x.code?' · '+esc(x.code):''}</option>`).join('');
-  const root=modal(`<form class="lib-form" id="epUploadForm">
-    <div class="ep-upload-modal-note">资料上传后会先进入审核队列。<b>这里不需要选择最终存放位置。</b>审核通过后，系统会自动将资料公开到对应学科的资料库。</div>
-    <label>所属学科<select name="subject_id" required>${subjectOptions}</select></label>
-    <label>资料名称<input name="name" placeholder="可留空，自动使用文件名"></label>
-    <label>备注<textarea name="description" placeholder="可选"></textarea></label>
-    <label>文件<input name="file" type="file" required></label>
-    <div class="ep-upload-progress" id="epUploadProgress"></div>
-    <button class="lib-btn primary" type="submit" id="epUploadSubmit">上传并提交审核</button>
-  </form>`);
-  root.querySelector('form').onsubmit=e=>submit(e,root);
-}
-
-async function submit(e,root){
-  e.preventDefault();
-  const form=e.currentTarget,btn=root.querySelector('#epUploadSubmit'),progress=root.querySelector('#epUploadProgress');
-  const fd=new FormData(form);const file=fd.get('file');const subjectId=Number(fd.get('subject_id'));const name=String(fd.get('name')||'').trim()||file?.name||'未命名资料';const description=String(fd.get('description')||'').trim()||null;
-  if(!file||!file.size)return alert('请选择文件。');if(!subjectId)return alert('请选择所属学科。');
-  btn.disabled=true;progress.textContent='正在上传并创建审核记录……';
-  try{
-    const s=await session();if(!s)throw new Error('登录状态已失效，请重新登录。');
-    if(file.size>20*1024*1024)throw new Error('当前版本单文件上限为 20 MB；更大的资料上传通道正在接入。');
-    fd.set('name',name);fd.set('description',description||'');fd.set('subject_id',String(subjectId));
-    const response=await fetch(FUNCTION_URL,{method:'POST',headers:{Authorization:`Bearer ${s.access_token}`,apikey:C.SUPABASE_PUBLISHABLE_KEY},body:fd});
-    const payload=await response.json().catch(()=>({}));
-    if(!response.ok)throw new Error(payload?.error||`上传失败（${response.status}）`);
-    root.querySelector('.lib-modal').innerHTML=`<div class="ep-upload-success"><b>上传成功</b><div class="muted">资料已经进入审核队列，审核通过后会自动公开到对应学科资料库。</div><div style="height:16px"></div><button class="lib-btn primary" id="epUploadDone">完成</button></div>`;
-    root.querySelector('#epUploadDone').onclick=()=>{open=false;root.remove()};
-  }catch(err){
-    progress.textContent='';alert(`上传失败：${err?.message||err}`);btn.disabled=false;
-  }
-}
-
-function ensureEntry(){
-  if(location.hash.slice(1)!=='/library')return;
-  style();
-  const title=document.querySelector('.lib-title');if(!title)return;
-  if(document.getElementById('epLibraryUploadEntry'))return;
-  const tools=title.querySelector('.lib-tools');
-  const btn=document.createElement('button');btn.id='epLibraryUploadEntry';btn.className='lib-btn primary ep-upload-entry';btn.textContent='＋ 上传资料';btn.onclick=showUpload;
-  if(tools)tools.appendChild(btn);else{const wrap=document.createElement('div');wrap.className='lib-tools';wrap.appendChild(btn);title.appendChild(wrap)}
-}
-
-const mo=new MutationObserver(()=>{clearTimeout(window.__epUploadEntryTimer);window.__epUploadEntryTimer=setTimeout(ensureEntry,80)});
-mo.observe(document.body,{childList:true,subtree:true});
-window.addEventListener('hashchange',()=>setTimeout(ensureEntry,200));
-setTimeout(ensureEntry,500);
+async function loadSubjects(){const {data,error}=await sb.from('subjects').select('id,name,code').order('name');if(error)throw error;window.__epLibraryUploadSubjects=data||[];return data||[]}
+async function loadFolders(subjectId){const {data,error}=await sb.from('library_items').select('id,name,parent_id').eq('subject_id',subjectId).eq('item_type','folder').eq('is_hidden',false).order('name');if(error)throw error;return data||[]}
+function modal(body){const r=document.createElement('div');r.className='lib-modal-back';r.innerHTML=`<div class="lib-modal small"><div class="lib-modal-head"><b>上传资料</b><button class="lib-close">×</button></div>${body}</div>`;r.querySelector('.lib-close').onclick=()=>{open=false;r.remove()};r.onclick=e=>{if(e.target===r){open=false;r.remove()}};document.body.appendChild(r);return r}
+function folderOptions(folders){if(!folders.length)return '<option value="">根目录（不放入文件夹）</option>';return '<option value="">根目录（不放入文件夹）</option>'+folders.map(x=>`<option value="${x.id}">▰ ${esc(x.name)}</option>`).join('')}
+async function showUpload(){if(open)return;open=true;style();const s=await session();if(!s){open=false;location.hash='#login';return}let subjects=[];try{subjects=await loadSubjects()}catch(e){open=false;alert(e.message||'无法读取学科列表。');return}const pageSubject=subjectFromPage();const subjectOptions=subjects.map(x=>`<option value="${x.id}" ${pageSubject&&Number(pageSubject.id)===Number(x.id)?'selected':''}>${esc(x.name)}${x.code?' · '+esc(x.code):''}</option>`).join('');const root=modal(`<form class="lib-form" id="epUploadForm"><div class="ep-upload-modal-note">资料上传后会先进入审核队列。你可以在这里直接选择它最终要归入的文件夹；如果暂时不确定，也可以先放在根目录。</div><label>所属学科<select name="subject_id" id="epUploadSubject" required>${subjectOptions}</select></label><label>放入文件夹<select name="parent_id" id="epUploadFolder"><option value="">根目录（不放入文件夹）</option></select></label><label>资料名称<input name="name" placeholder="可留空，自动使用文件名"></label><label>备注<textarea name="description" placeholder="可选"></textarea></label><label>文件<input name="file" type="file" required></label><div class="ep-upload-progress" id="epUploadProgress"></div><button class="lib-btn primary" type="submit" id="epUploadSubmit">上传并提交审核</button></form>`);const subjectEl=root.querySelector('#epUploadSubject');const folderEl=root.querySelector('#epUploadFolder');const refreshFolders=async()=>{folderEl.innerHTML='<option value="">正在读取文件夹……</option>';try{folderEl.innerHTML=folderOptions(await loadFolders(Number(subjectEl.value)))}catch(e){folderEl.innerHTML='<option value="">根目录（暂时无法读取文件夹）</option>'}};subjectEl.addEventListener('change',refreshFolders);await refreshFolders();root.querySelector('form').onsubmit=e=>submit(e,root)}
+async function submit(e,root){e.preventDefault();const form=e.currentTarget,btn=root.querySelector('#epUploadSubmit'),progress=root.querySelector('#epUploadProgress');const fd=new FormData(form);const file=fd.get('file');const subjectId=Number(fd.get('subject_id'));const parentId=String(fd.get('parent_id')||'').trim()||null;const name=String(fd.get('name')||'').trim()||file?.name||'未命名资料';const description=String(fd.get('description')||'').trim()||null;if(!file||!file.size)return alert('请选择文件。');if(!subjectId)return alert('请选择所属学科。');btn.disabled=true;progress.textContent='正在上传并创建审核记录……';try{const s=await session();if(!s)throw new Error('登录状态已失效，请重新登录。');if(file.size>20*1024*1024)throw new Error('当前版本单文件上限为 20 MB；更大的资料上传通道正在接入。');fd.set('name',name);fd.set('description',description||'');fd.set('subject_id',String(subjectId));const response=await fetch(FUNCTION_URL,{method:'POST',headers:{Authorization:`Bearer ${s.access_token}`,apikey:C.SUPABASE_PUBLISHABLE_KEY},body:fd});const payload=await response.json().catch(()=>({}));if(!response.ok)throw new Error(payload?.error||`上传失败（${response.status}）`);if(parentId){const {error:moveError}=await sb.from('library_items').update({parent_id:parentId,updated_at:new Date().toISOString()}).eq('id',payload.item_id).eq('created_by',s.user.id);if(moveError)throw new Error(`资料已上传，但放入文件夹失败：${moveError.message}`)}root.querySelector('.lib-modal').innerHTML=`<div class="ep-upload-success"><b>上传成功</b><div class="muted">资料已进入审核队列${parentId?'，并已放入你选择的文件夹':''}。审核通过后会自动公开。</div><div style="height:16px"></div><button class="lib-btn primary" id="epUploadDone">完成</button></div>`;root.querySelector('#epUploadDone').onclick=()=>{open=false;root.remove()}}catch(err){progress.textContent='';alert(`上传失败：${err?.message||err}`);btn.disabled=false}}
+function ensureEntry(){if(location.hash.slice(1)!=='/library')return;style();const title=document.querySelector('.lib-title');if(!title)return;if(document.getElementById('epLibraryUploadEntry'))return;const tools=title.querySelector('.lib-tools');const btn=document.createElement('button');btn.id='epLibraryUploadEntry';btn.className='lib-btn primary ep-upload-entry';btn.textContent='＋ 上传资料';btn.onclick=showUpload;if(tools)tools.appendChild(btn);else{const wrap=document.createElement('div');wrap.className='lib-tools';wrap.appendChild(btn);title.appendChild(wrap)}}
+const mo=new MutationObserver(()=>{clearTimeout(window.__epUploadEntryTimer);window.__epUploadEntryTimer=setTimeout(ensureEntry,80)});mo.observe(document.body,{childList:true,subtree:true});window.addEventListener('hashchange',()=>setTimeout(ensureEntry,200));setTimeout(ensureEntry,500);
