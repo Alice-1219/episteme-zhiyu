@@ -322,3 +322,15 @@ B / C / D 浏览器
 - AI provider secret key
 
 RLS 是必须开启的。本项目 SQL 已经开启。
+
+
+## Resource storage — Baidu Netdisk mode
+
+Episteme no longer uploads new resource files to Supabase Storage. New resource records store:
+- `external_url` — Baidu Netdisk share/preview link
+- `external_code` — optional extraction code
+- metadata such as title, subject, topic, description, uploader and review status
+
+Run `supabase/migration_baidu.sql` once in Supabase SQL Editor before using the new upload form.
+
+Existing `file_path` records are kept for backward compatibility. The new frontend does not upload files to Supabase Storage.
