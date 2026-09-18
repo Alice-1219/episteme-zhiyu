@@ -94,11 +94,31 @@ function subscribeRealtime(){
 
 function navActive(){document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.getAttribute("href")==="#"+route()))}
 function hero(k,t,d){return `<section class="page-hero"><div class="eyebrow">${k}</div><h1>${t}</h1><p>${d}</p></section>`}
-function home(){return `<section class="hero container"><div><div class="eyebrow">STUDENT-LED LEARNING COMMUNITY</div><h1>一起学习，<br>互相帮助，<br>让知识<strong>留下来。</strong></h1><p>Episteme 知屿是一个由高中生发起并主导的线上学习共同体。通过同伴授课、资源共享、答疑互助与 AI 辅助，我们希望让每一届学生都能给下一届留下更多知识。</p><div class="actions"><button class="primary" onclick="location.hash='#/community'">进入讨论群 →</button><button class="secondary" onclick="location.hash='#/library'">浏览资源库</button></div></div><div class="hero-art"><div class="sun"></div><div class="m1"></div><div class="m2"></div><div class="water"></div><div class="hero-logo"><img src="assets/logo.png"><b>Episteme 知屿</b><span>TRUE KNOWLEDGE BELONGS TO NO ONE.</span></div></div></section>
-<section class="loop"><div class="container"><div class="section-head"><div class="eyebrow">THE KNOWLEDGE LOOP</div><h2>Ask → Discuss → Understand → Preserve → Share</h2></div><div class="loop-grid">${[["01","Ask","提出真实遇到的问题。"],["02","Discuss","进入对应学科共同思考。"],["03","Understand","关注逻辑，而不只是答案。"],["04","Preserve","高价值问答整理为长期知识。"],["05","Share","让下一位学习者继续使用。"]].map(x=>`<div><i>${x[0]}</i><h3>${x[1]}</h3><p>${x[2]}</p></div>`).join("")}</div></div></section>
-<section class="container spaces"><div class="section-head"><div class="eyebrow">EXPLORE</div><h2>知屿里的三个空间</h2></div><div class="space-grid"><a class="space sage" href="#/community"><small>COMMUNITY</small><h3>讨论群</h3><p>提问、回答、实时讨论，以及 Question Card。</p><span>进入讨论 →</span></a><a class="space blue" href="#/courses"><small>COURSES</small><h3>录课</h3><p>同伴授课，帮助理解概念、原理和知识之间的联系。</p><span>观看录课 →</span></a><a class="space lav" href="#/library"><small>LIBRARY</small><h3>资源库</h3><p>笔记、讲义、真题、工具和高价值知识长期保存。</p><span>浏览资源 →</span></a></div></section>
-<section class="quote"><blockquote>“我们希望每一届学生离开时，都能给下一届留下比自己刚加入时更多的知识。”<cite>— EPISTEME 知屿</cite></blockquote></section>`}
-
+function home(){
+return `<main class="landing">
+  <section class="landing-hero">
+    <div class="landing-inner">
+      <div class="landing-brand">
+        <img src="logo.png" alt="Episteme 知屿">
+        <span>Episteme 知屿</span>
+      </div>
+      <div class="landing-copy">
+        <p class="landing-slogan">TRUE KNOWLEDGE BELONGS TO NO ONE.</p>
+        <h1>Have you ever<br><em>hide</em> a question<br>because you think<br>it is stupid?</h1>
+        <p class="landing-sub">We don't think questions are stupid.</p>
+      </div>
+      <div class="landing-actions">
+        <button class="primary landing-enter" onclick="location.hash='#/community'">Ask a question <span>→</span></button>
+        <button class="secondary landing-explore" onclick="location.hash='#/courses'">Explore knowledge</button>
+      </div>
+    </div>
+  </section>
+  <section class="landing-bottom">
+    <div>STUDENT-LED LEARNING COMMUNITY</div>
+    <div class="landing-scroll">SCROLL TO EXPLORE ↓</div>
+  </section>
+</main>`;
+}
 function community(){
  if(!supabase)return setupNotice("COMMUNITY","讨论群","配置 Supabase 后，这里会自动变成真正的多人讨论区。");
  return hero("COMMUNITY","讨论群","Question Card + 实时讨论。高价值讨论可以进一步进入 Knowledge Base。")+`<section class="container content"><div class="community-grid"><aside class="panel"><div class="eyebrow">CHANNELS</div>${["全部","Mathematics","Physics","Chemistry","Biology","English","Economics","History","Geography","Theatre & Arts","Music"].map((s,i)=>`<button class="channel ${i===0?"active":""}" data-sub="${s}"># ${s}</button>`).join("")}</aside><div class="panel"><div class="toolbar"><div><div class="eyebrow">QUESTION CARDS</div><h2>${state.questions.length} 个问题</h2></div><button class="primary" onclick="ask()">＋ 提问</button></div><div class="filters">${["全部","unanswered","discussing","answered","archived"].map((s,i)=>`<button class="filter ${i===0?"active":""}" data-status="${s}">${i?statusText[s]:"全部"}</button>`).join("")}</div><div id="questions">${questionList()}</div></div></div><div class="panel chat-panel"><div class="toolbar"><div><div class="eyebrow">GENERAL CHAT</div><h2>开放讨论</h2></div>${state.user?`<span class="online">● 已登录</span>`:`<button class="secondary" onclick="auth()">登录后参与讨论</button>`}</div><div id="chat">${chatHtml()}</div>${state.user?`<form id="chatForm" class="chat-form"><input name="content" placeholder="说点什么……"><button class="primary">发送</button></form>`:`<div class="empty">登录后可以发送消息。</div>`}</div></section>`;
