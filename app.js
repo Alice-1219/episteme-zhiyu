@@ -49,11 +49,25 @@ async function loadPageData(r){
    const id=r.split("/")[2];
    const [c,l]=await Promise.all([
      supabase.from("courses").select("*,subjects(name),profiles(username)").eq("id",id).maybeSingle(),
-     supabase.from("course_lessons").select("*").eq("course_id",id).order("lesson_order")
+     // Load the chapter/level names only. Do NOT load any video URL/content yet.
+     supabase.from("course_lessons").select("id,course_id,title,lesson_order,duration_seconds").eq("course_id",id).order("lesson_order")
    ]);
    state.courses=state.courses.filter(x=>x.id!==id);
    if(c.data)state.courses.push(c.data);
    state.lessons=state.lessons.filter(x=>x.course_id!==id).concat(l.data||[]);
+   return;
+ }
+ if(r.startsWith("/question/")){
+   const id=r.split("/")[2];
+   const [q,a,s]=await Promise.all([
+     supabase.from("questions").select("*,profiles(username),subjects(name)").eq("id",id).maybeSingle(),
+     supabase.from("answers").select("*,profiles(username)").eq("question_id",id).order("created_at",{ascending:true}),
+     supabase.from("subjects").select("*").order("name")
+   ]);
+   state.questions=state.questions.filter(x=>x.id!==id);
+   if(q.data)state.questions.push(q.data);
+   state.answers=state.answers.filter(x=>x.question_id!==id).concat(a.data||[]);
+   state.subjects=s.data||[];
    return;
  }
  if(r==="/library"){
@@ -219,14 +233,27 @@ function courseDetail(id){
     (ls.length?ls.map((l,i)=>'<button class="lesson '+(i===0?'active':'')+'" onclick="playLesson(\''+l.id+'\',this)"><span>'+String(i+1).padStart(2,"0")+' · '+esc(l.title)+'</span><small>'+(l.duration_seconds?Math.round(l.duration_seconds/60)+" min":"○")+'</small></button>').join(''):'<div class="empty">还没有章节。</div>')+
     '</div></div></div></section>';
 }
-window.playLesson=function(id,btn){
+window.playLesson=async function(id,btn){
   const l=state.lessons.find(x=>x.id===id);
+  if(!l)return;
   document.querySelectorAll('.lesson').forEach(x=>x.classList.remove('active'));
   if(btn)btn.classList.add('active');
   const box=document.getElementById('lessonPlayer');
-  if(box)box.innerHTML=lessonPlayerHtml(l);
+  if(box)box.innerHTML='<div class="video-empty">正在加载这一章节……</div>';
+  // Only the clicked level/chapter requests its video URL.
+  const {data,error}=await supabase.from('course_lessons')
+    .select('*').eq('id',id).maybeSingle();
+  if(error||!data){
+    if(box)box.innerHTML='<div class="video-empty">这一章节暂时无法加载。</div>';
+    return;
+  }
+  const i=state.lessons.findIndex(x=>x.id===id);
+  if(i>=0)state.lessons[i]=data;
+  if(route().startsWith('/course/')&&route().split('/')[2]===data.course_id){
+    if(box)box.innerHTML=lessonPlayerHtml(data);
+  }
   const edit=document.querySelector('.video-source-actions button');
-  if(edit)edit.setAttribute('onclick',"addBilibiliVideo('"+(l?.course_id||'')+"','"+(l?.id||'')+"')");
+  if(edit)edit.setAttribute('onclick',"addBilibiliVideo('"+(data.course_id||'')+"','"+(data.id||'')+"')");
 };
 window.addBilibiliVideo=async function(courseId,lessonId){
   if(!state.user)return auth();
