@@ -21,36 +21,63 @@ async function boot(){
  const {data:{session}}=await supabase.auth.getSession();
  await setUser(session?.user||null);
  supabase.auth.onAuthStateChange(async(_e,s)=>{await setUser(s?.user||null);});
- await loadAll();
- subscribeRealtime();
  render();
 }
-async function setUser(user){
- state.user=user;
- if(user){
-   let {data}=await supabase.from("profiles").select("*").eq("id",user.id).maybeSingle();
-   if(!data){await supabase.from("profiles").insert({id:user.id,username:user.email?.split("@")[0]||"New member"});({data}=await supabase.from("profiles").select("*").eq("id",user.id).maybeSingle())}
-   state.profile=data;
- } else state.profile=null;
- updateAuthButton();
+
+async function loadPageData(r){
+ if(!supabase)return;
+ // Load only the data required by the current page.
+ if(r==="/community"){
+   const [q,a,s]=await Promise.all([
+     supabase.from("questions").select("*,profiles(username),subjects(name)").order("created_at",{ascending:false}),
+     supabase.from("answers").select("*,profiles(username)").order("created_at",{ascending:true}),
+     supabase.from("subjects").select("*").order("name")
+   ]);
+   state.questions=q.data||[]; state.answers=a.data||[]; state.subjects=s.data||[];
+   return;
+ }
+ if(r==="/courses"){
+   const [s,c]=await Promise.all([
+     supabase.from("subjects").select("*").order("name"),
+     supabase.from("courses").select("*,subjects(name),profiles(username)").order("created_at",{ascending:false})
+   ]);
+   state.subjects=s.data||[]; state.courses=c.data||[];
+   // IMPORTANT: course_lessons are NOT loaded here.
+   return;
+ }
+ if(r.startsWith("/course/")){
+   const id=r.split("/")[2];
+   const [c,l]=await Promise.all([
+     supabase.from("courses").select("*,subjects(name),profiles(username)").eq("id",id).maybeSingle(),
+     supabase.from("course_lessons").select("*").eq("course_id",id).order("lesson_order")
+   ]);
+   state.courses=state.courses.filter(x=>x.id!==id);
+   if(c.data)state.courses.push(c.data);
+   state.lessons=state.lessons.filter(x=>x.course_id!==id).concat(l.data||[]);
+   return;
+ }
+ if(r==="/library"){
+   const [s,res]=await Promise.all([
+     supabase.from("subjects").select("*").order("name"),
+     supabase.from("resources").select("*,subjects(name),profiles(username)").order("created_at",{ascending:false})
+   ]);
+   state.subjects=s.data||[]; state.resources=res.data||[];
+   return;
+ }
 }
-function updateAuthButton(){document.getElementById("authBtn").textContent=state.user?(state.profile?.username||"我的账号"):"登录 / 注册"}
-async function loadAll(){
- const q=await supabase.from("questions").select("*,profiles(username),subjects(name)").order("created_at",{ascending:false});
- state.questions=q.data||[];
- const a=await supabase.from("answers").select("*,profiles(username)").order("created_at",{ascending:true});state.answers=a.data||[];
- const s=await supabase.from("subjects").select("*").order("name");state.subjects=s.data||[];
- const c=await supabase.from("courses").select("*,subjects(name),profiles(username)").order("created_at",{ascending:false});state.courses=c.data||[];
- const l=await supabase.from("course_lessons").select("*").order("lesson_order");state.lessons=l.data||[];
- const r=await supabase.from("resources").select("*,subjects(name),profiles(username)").order("created_at",{ascending:false});state.resources=r.data||[];
-}
+
 function subscribeRealtime(){
+ if(!supabase)return;
  supabase.channel("episteme-live")
- .on("postgres_changes",{event:"*",schema:"public",table:"questions"},async()=>{await loadAll();render()})
- .on("postgres_changes",{event:"*",schema:"public",table:"answers"},async()=>{await loadAll();if(route().startsWith("/question/")) render()})
- .on("postgres_changes",{event:"INSERT",schema:"public",table:"messages"},payload=>{if(payload.new.channel==="general"){state.messages.push(payload.new);if(route()==="/community")renderChat()}})
+ .on("postgres_changes",{event:"INSERT",schema:"public",table:"messages"},payload=>{
+   if(payload.new.channel==="general"){
+     state.messages.push(payload.new);
+     if(route()==="/community")renderChat();
+   }
+ })
  .subscribe();
 }
+
 function navActive(){document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.getAttribute("href")==="#"+route()))}
 function hero(k,t,d){return `<section class="page-hero"><div class="eyebrow">${k}</div><h1>${t}</h1><p>${d}</p></section>`}
 function home(){return `<section class="hero container"><div><div class="eyebrow">STUDENT-LED LEARNING COMMUNITY</div><h1>一起学习，<br>互相帮助，<br>让知识<strong>留下来。</strong></h1><p>Episteme 知屿是一个由高中生发起并主导的线上学习共同体。通过同伴授课、资源共享、答疑互助与 AI 辅助，我们希望让每一届学生都能给下一届留下更多知识。</p><div class="actions"><button class="primary" onclick="location.hash='#/community'">进入讨论群 →</button><button class="secondary" onclick="location.hash='#/library'">浏览资源库</button></div></div><div class="hero-art"><div class="sun"></div><div class="m1"></div><div class="m2"></div><div class="water"></div><div class="hero-logo"><img src="assets/logo.png"><b>Episteme 知屿</b><span>TRUE KNOWLEDGE BELONGS TO NO ONE.</span></div></div></section>
@@ -116,7 +143,37 @@ function uploadResource(){
 function about(){return hero("ABOUT EPISTEME","关于知屿","True knowledge belongs to no one.")+`<section class="container content"><div class="about-grid"><article class="about-card"><h3>我们是谁</h3><p>Episteme 知屿是一个由高中生发起并主导的线上学习共同体。通过同伴授课、资源共享、答疑互助，并结合 AI 工具辅助学习，致力于打破信息壁垒、缩小教育资源差距。</p></article><article class="about-card"><h3>为什么需要知屿</h3><p>有效信息容易在群聊中被淹没，优质资源也难以整合共享。我们希望把一次性的帮助变成可以长期保存、跨年级传承的知识。</p></article><article class="about-card"><h3>Mission</h3><p>让更多学生能够获得可靠、可及的学习资源，并通过同伴互助共同成长。</p></article><article class="about-card"><h3>Vision</h3><p>建立一个可以不断积累知识、跨年级传承，并由学生自己持续维护的学习共同体。</p></article></div><div class="panel values-panel"><div class="eyebrow">CORE VALUES</div><h2>Share · Collaborate · Understand · Preserve</h2><div class="values">${[["Share","知识不应该因为拥有者不同而产生壁垒。"],["Collaborate","学习不应该只有竞争，也可以通过合作共同进步。"],["Understand","我们不仅关注答案，更关注问题背后的逻辑。"],["Preserve","有价值的讨论不应该随着聊天记录被刷掉。"]].map(x=>`<div><b>${x[0]}</b><p>${x[1]}</p></div>`).join("")}</div></div></section>`}
 function setupNotice(k,t){return hero(k,t,"当前前端已经完成。只需在 config.js 填入 Supabase URL + Publishable Key，再运行 SQL，即可开启真正的动态功能。")+`<section class="container content"><div class="panel setup"><h2>还差最后一步配置</h2><ol><li>创建 Supabase 项目</li><li>在 SQL Editor 运行项目里的 <code>supabase/schema.sql</code></li><li>打开 <code>config.js</code>，填写 Project URL 和 Publishable Key</li><li>把整个文件夹上传 GitHub Pages</li></ol><p>不需要服务器，不需要 Node.js。GitHub Pages 继续负责网站，Supabase 负责数据库、登录、实时消息和资源存储。</p></div></section>`}
 function auth(){modal(state.user?"我的账号":"登录 / 注册",state.user?`<div class="account"><div class="avatar">${esc((state.profile?.username||"U")[0].toUpperCase())}</div><h3>${esc(state.profile?.username||"Member")}</h3><p>${esc(state.user.email||"")}</p><p class="help">角色：${esc(state.profile?.role||"student")}</p><button class="submit" id="logout">退出登录</button></div>`:`<div class="auth-tabs"><button class="filter active" id="loginTab">登录</button><button class="filter" id="signupTab">注册</button></div><form class="form" id="authForm"><label>昵称<input name="username" placeholder="注册时填写"></label><label>邮箱<input type="email" name="email" required></label><label>密码<input type="password" name="password" minlength="6" required></label><p class="help">第一版使用 Supabase Auth。密码不会存进 Episteme 自己的数据库。</p><button class="submit">继续</button></form>`);if(state.user){document.getElementById("logout").onclick=async()=>{await supabase.auth.signOut();closeModal();toast("已退出");location.hash="#/"};return}let mode="login";document.getElementById("loginTab").onclick=()=>{mode="login";document.getElementById("signupTab").classList.remove("active");document.getElementById("loginTab").classList.add("active")};document.getElementById("signupTab").onclick=()=>{mode="signup";document.getElementById("loginTab").classList.remove("active");document.getElementById("signupTab").classList.add("active")};document.getElementById("authForm").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);let res;if(mode==="signup")res=await supabase.auth.signUp({email:f.get("email"),password:f.get("password"),options:{data:{username:f.get("username")||f.get("email").split("@")[0]}}});else res=await supabase.auth.signInWithPassword({email:f.get("email"),password:f.get("password")});if(res.error)toast(res.error.message);else{closeModal();toast(mode==="signup"?"注册成功，请检查邮箱（如开启邮箱确认）":"登录成功")}}}
-async function render(){navActive();const r=route();const main=document.getElementById("main");if(r==="/")main.innerHTML=home();else if(r==="/community")main.innerHTML=community();else if(r.startsWith("/question/"))main.innerHTML=questionDetail(r.split("/")[2]);else if(r==="/courses")main.innerHTML=courses();else if(r.startsWith("/course/"))main.innerHTML=courseDetail(r.split("/")[2]);else if(r==="/library")main.innerHTML=library();else if(r==="/about")main.innerHTML=about();else main.innerHTML=home();bind();if(r==="/community")await loadChat();if(r.startsWith("/question/"))bindAnswer(r.split("/")[2])}
+async function render(){
+ navActive();
+ const r=route();
+ const main=document.getElementById("main");
+ // Home/About are static: do not query the database just to render the first screen.
+ if(!supabase){
+   if(r==="/")main.innerHTML=home();
+   else if(r==="/about")main.innerHTML=about();
+   else main.innerHTML=setupNotice("SETUP","Episteme 知屿","配置 Supabase 后，这里会自动变成真正的动态功能。");
+   bind();
+   return;
+ }
+ // Render a lightweight shell first, then fetch only this route's data.
+ if(r==="/")main.innerHTML=home();
+ else if(r==="/about")main.innerHTML=about();
+ else main.innerHTML='<section class="container content"><div class="panel"><div class="empty">正在加载……</div></div></section>';
+ bind();
+ await loadPageData(r);
+ // Ignore stale results if the user navigated away while data was loading.
+ if(route()!==r)return;
+ if(r==="/community")main.innerHTML=community();
+ else if(r.startsWith("/question/"))main.innerHTML=questionDetail(r.split("/")[2]);
+ else if(r==="/courses")main.innerHTML=courses();
+ else if(r.startsWith("/course/"))main.innerHTML=courseDetail(r.split("/")[2]);
+ else if(r==="/library")main.innerHTML=library();
+ else if(r==="/")main.innerHTML=home();
+ else if(r==="/about")main.innerHTML=about();
+ bind();
+ if(r==="/community")await loadChat();
+ if(r.startsWith("/question/"))bindAnswer(r.split("/")[2]);
+}
 function bind(){document.querySelectorAll(".channel").forEach(b=>b.onclick=()=>{document.querySelectorAll(".channel").forEach(x=>x.classList.remove("active"));b.classList.add("active");const st=document.querySelector(".filter.active")?.dataset.status||"全部";document.getElementById("questions").innerHTML=questionList(b.dataset.sub,st,state.query)});document.querySelectorAll(".filter[data-status]").forEach(b=>b.onclick=()=>{document.querySelectorAll(".filter[data-status]").forEach(x=>x.classList.remove("active"));b.classList.add("active");const sub=document.querySelector(".channel.active")?.dataset.sub||"全部";document.getElementById("questions").innerHTML=questionList(sub,b.dataset.status,state.query)});const cf=document.getElementById("chatForm");if(cf)cf.onsubmit=async e=>{e.preventDefault();const content=new FormData(cf).get("content");if(!content?.trim())return;const {error}=await supabase.from("messages").insert({channel:"general",author_id:state.user.id,content:content.trim()});if(error)toast(error.message);else cf.reset()};const rs=document.getElementById("resSearch");if(rs)rs.oninput=e=>document.getElementById("resources").innerHTML=resourceList(e.target.value);const search=document.getElementById("globalSearch");if(search)search.oninput=globalSearch}
 function bindAnswer(id){const f=document.getElementById("answerForm");if(f)f.onsubmit=async e=>{e.preventDefault();const content=new FormData(f).get("content");const {error}=await supabase.from("answers").insert({question_id:id,author_id:state.user.id,content});if(error)toast(error.message);else{await supabase.from("questions").update({status:"discussing"}).eq("id",id);f.reset();toast("回答已提交")}}}
 function globalSearch(e){const q=e.target.value.trim().toLowerCase();const box=document.getElementById("searchResults");if(!q){box.innerHTML="";return}const arr=[...state.questions.map(x=>({t:x.title,k:"Question Card",h:"#/question/"+x.id})),...state.courses.map(x=>({t:x.title,k:"Course",h:"#/course/"+x.id})),...state.resources.map(x=>({t:x.title,k:"Resource",h:"#/library"}))].filter(x=>x.t.toLowerCase().includes(q)).slice(0,10);box.innerHTML=arr.length?arr.map(x=>`<a href="${x.h}"><b>${esc(x.t)}</b><small>${x.k}</small></a>`).join(""):`<div class="empty">没有找到结果。</div>`}
