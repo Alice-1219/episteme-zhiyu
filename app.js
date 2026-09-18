@@ -127,3 +127,61 @@ document.getElementById("menuBtn").onclick=()=>document.getElementById("mobileNa
 document.querySelectorAll("#mobileNav a").forEach(a=>a.onclick=()=>document.getElementById("mobileNav").classList.remove("open"));
 window.addEventListener("hashchange",render);
 boot();
+
+// ===== Bilibili external embed =====
+function bilibiliEmbedUrl(raw){
+  try{
+    const u=new URL(String(raw).trim());
+    const text=u.pathname+" "+u.search+" "+u.hash;
+    const bv=text.match(/BV[0-9A-Za-z]+/i)?.[0];
+    if(bv)return "https://player.bilibili.com/player.html?bvid="+encodeURIComponent(bv)+"&page=1&high_quality=1&danmaku=0";
+    const av=text.match(/(?:av|AV)(\\d+)/)?.[1];
+    if(av)return "https://player.bilibili.com/player.html?aid="+encodeURIComponent(av)+"&page=1&high_quality=1&danmaku=0";
+    return null;
+  }catch{return null}
+}
+function isBilibiliUrl(raw){
+  try{const u=new URL(String(raw).trim());return /(^|\\.)bilibili\\.com$/i.test(u.hostname)||/(^|\\.)b23\\.tv$/i.test(u.hostname)}catch{return false}
+}
+function lessonPlayerHtml(l){
+  if(l?.video_url&&isBilibiliUrl(l.video_url)){
+    const src=bilibiliEmbedUrl(l.video_url);
+    if(src)return '<iframe id="biliPlayer" class="bili-player" src="'+src+'" title="'+esc(l.title||"Bilibili video")+'" allow="fullscreen; picture-in-picture" allowfullscreen loading="lazy" referrerpolicy="strict-origin-when-cross-origin"></iframe>';
+  }
+  return '<video id="player" class="video" controls '+(l?.video_url?'src="'+esc(l.video_url)+'"':'')+'></video>'+(l?.video_url?'':'<div class="video-empty">课程视频链接尚未添加</div>');
+}
+function courseDetail(id){
+  const c=state.courses.find(x=>x.id===id);
+  if(!c)return '<div class="container content"><div class="empty">课程不存在。</div></div>';
+  const ls=state.lessons.filter(x=>x.course_id===id);
+  const canEdit=["subject_manager","admin","coordinator"].includes(state.profile?.role);
+  const first=ls[0];
+  const edit=canEdit?'<div class="video-source-actions"><button class="secondary" onclick="addBilibiliVideo(\''+c.id+'\',\''+(first?.id||'')+'\')">＋ 嵌入哔哩哔哩视频</button><span>视频仍存放在哔哩哔哩，网站只保存链接。</span></div>':'';
+  return hero("COURSE",c.title,subjectName(c.subject_id)+" · "+(c.profiles?.username||"Episteme"))+
+    '<section class="container content"><div class="panel"><a class="back" href="#/courses">← 返回课程</a><div class="viewer"><div><div id="lessonPlayer">'+lessonPlayerHtml(first)+'</div>'+edit+'<div class="course-info"><b>课程简介</b><p>'+esc(c.description||"暂无简介")+'</p></div></div><div class="lessons"><div class="eyebrow">LESSONS</div>'+
+    (ls.length?ls.map((l,i)=>'<button class="lesson '+(i===0?'active':'')+'" onclick="playLesson(\''+l.id+'\',this)"><span>'+String(i+1).padStart(2,"0")+' · '+esc(l.title)+'</span><small>'+(l.duration_seconds?Math.round(l.duration_seconds/60)+" min":"○")+'</small></button>').join(''):'<div class="empty">还没有章节。</div>')+
+    '</div></div></div></section>';
+}
+window.playLesson=function(id,btn){
+  const l=state.lessons.find(x=>x.id===id);
+  document.querySelectorAll('.lesson').forEach(x=>x.classList.remove('active'));
+  if(btn)btn.classList.add('active');
+  const box=document.getElementById('lessonPlayer');
+  if(box)box.innerHTML=lessonPlayerHtml(l);
+  const edit=document.querySelector('.video-source-actions button');
+  if(edit)edit.setAttribute('onclick',"addBilibiliVideo('"+(l?.course_id||'')+"','"+(l?.id||'')+"')");
+};
+window.addBilibiliVideo=async function(courseId,lessonId){
+  if(!state.user)return auth();
+  if(!["subject_manager","admin","coordinator"].includes(state.profile?.role))return toast("只有学科负责人或管理员可以添加课程视频");
+  if(!lessonId)return toast("请先创建一个章节，再嵌入视频");
+  modal("嵌入哔哩哔哩视频",'<form class="form" id="biliForm"><label>哔哩哔哩视频链接<input name="url" type="url" required placeholder="粘贴 BV 视频链接，例如 https://www.bilibili.com/video/BV..."></label><p class="help">视频不会上传到 Episteme，也不会占用网站存储空间。这里只保存 Bilibili 链接，并在课程页面调用播放器。</p><button class="submit">保存并嵌入</button></form>');
+  document.getElementById('biliForm').onsubmit=async function(e){
+    e.preventDefault();
+    const url=String(new FormData(e.target).get('url')||'').trim();
+    if(!isBilibiliUrl(url)||!bilibiliEmbedUrl(url))return toast('请输入有效的哔哩哔哩视频链接');
+    const res=await supabase.from('course_lessons').update({video_url:url}).eq('id',lessonId);
+    if(res.error)toast(res.error.message);
+    else{const i=state.lessons.findIndex(x=>x.id===lessonId);if(i>=0)state.lessons[i]={...state.lessons[i],video_url:url};closeModal();render();toast('Bilibili 视频已嵌入');}
+  };
+};
