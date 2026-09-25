@@ -1,103 +1,129 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
-const C=window.EPISTEME_CONFIG||{}, sb=C.SUPABASE_URL?createClient(C.SUPABASE_URL,C.SUPABASE_PUBLISHABLE_KEY):null;
-let user=null,profile=null,subjects=[];
-const $=s=>document.querySelector(s);
-const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[m]));
-const toast=s=>{const x=$("#toast");x.textContent=s;x.className="toast show";setTimeout(()=>x.className="toast",2200)};
-const close=()=>$("#modal").innerHTML="";
-const sub=id=>(subjects.find(x=>x.id===id)||{}).name||"未分类";
+
+const CFG=window.EPISTEME_CONFIG||{};
+const configured=CFG.SUPABASE_URL && !CFG.SUPABASE_URL.includes("PASTE_") && CFG.SUPABASE_PUBLISHABLE_KEY && !CFG.SUPABASE_PUBLISHABLE_KEY.includes("PASTE_");
+const supabase=configured?createClient(CFG.SUPABASE_URL,CFG.SUPABASE_PUBLISHABLE_KEY):null;
+
+const state={user:null,profile:null,subjects:[],questions:[],answers:[],courses:[],lessons:[],resources:[],messages:[],query:""};
+
+const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
+const fmtDate=x=>new Date(x).toLocaleString("zh-CN",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"});
+const route=()=>location.hash.slice(1)||"/";
+function toast(m){const t=document.getElementById("toast");t.textContent=m;t.classList.add("show");clearTimeout(window.tt);window.tt=setTimeout(()=>t.classList.remove("show"),2300)}
+function modal(title,body){document.getElementById("modalRoot").innerHTML=`<div class="backdrop" id="backdrop"><div class="modal"><div class="modal-head"><h3>${title}</h3><button onclick="closeModal()">×</button></div>${body}</div></div>`}
+window.closeModal=()=>document.getElementById("modalRoot").innerHTML="";
+const subjectName=id=>state.subjects.find(s=>s.id===id)?.name||"未分类";
+const subjectId=name=>state.subjects.find(s=>s.name===name)?.id||null;
+const statusText={unanswered:"Unanswered",discussing:"Discussing",answered:"Answered",archived:"Archived"};
 
 async function boot(){
-  if(sb){
-    const q=await sb.auth.getSession(); user=q.data.session?.user||null;
-    if(user){const p=await sb.from("profiles").select("*").eq("id",user.id).maybeSingle();profile=p.data}
-    const s=await sb.from("subjects").select("*").order("name");subjects=s.data||[];
-  }
-  if(location.pathname.endsWith("admin.html"))return admin();
-  if(location.pathname.endsWith("auth.html"))return authPage();
-  render();
+ if(!supabase){render();return}
+ const {data:{session}}=await supabase.auth.getSession();
+ await setUser(session?.user||null);
+ supabase.auth.onAuthStateChange(async(_e,s)=>{await setUser(s?.user||null);});
+ await loadAll();
+ subscribeRealtime();
+ render();
 }
-function render(){
-  const r=location.hash.slice(1)||"/";
-  if(r==="/")home();
-  else if(r==="/community")community();
-  else if(r==="/library")library();
-  else if(r==="/courses")courses();
-  else if(r==="/about")about();
-  else if(r==="/auth")authPage();
-  else if(r==="/admin")admin();
-  else if(r.startsWith("/course/"))course(r.split("/")[2]);
-  else home();
+async function setUser(user){
+ state.user=user;
+ if(user){
+   let {data}=await supabase.from("profiles").select("*").eq("id",user.id).maybeSingle();
+   if(!data){await supabase.from("profiles").insert({id:user.id,username:user.email?.split("@")[0]||"New member"});({data}=await supabase.from("profiles").select("*").eq("id",user.id).maybeSingle())}
+   state.profile=data;
+ } else state.profile=null;
+ updateAuthButton();
 }
-function home(){
-  $("#app").innerHTML='<section class="landing"><div class="landing-hero"><div class="landing-inner"><div class="landing-brand"><img src="logo.png"><span>Episteme</span></div><div class="landing-copy"><p class="landing-slogan">TRUE KNOWLEDGE BELONGS TO NO ONE.</p><h1>Have you ever hidden a question because you thought it was stupid?<br><br>Have you ever struggled to understand your teacher\'s logic?<br><br>Have you ever felt like you needed help from someone who knows where you are?</h1><p class="landing-sub">So did we.</p><p class="landing-sub">And welcome to Episteme.</p><p class="landing-sub">A safe place where every question can be asked without fear.<br>A place where every student can find their own path to success.<br>A student community where you can help your peers — and help yourself — navigate the struggles of learning.</p><div class="landing-actions"><a class="primary landing-enter" href="#/community">Ask a question <span>→</span></a><a class="secondary" href="#/courses">Explore knowledge</a></div></div></div></div><div class="landing-bottom"><span>STUDENT-LED LEARNING COMMUNITY</span><span class="landing-scroll">SCROLL TO EXPLORE ↓</span></div></section>';
+function updateAuthButton(){document.getElementById("authBtn").textContent=state.user?(state.profile?.username||"我的账号"):"登录 / 注册"}
+async function loadAll(){
+ const q=await supabase.from("questions").select("*,profiles(username),subjects(name)").order("created_at",{ascending:false});
+ state.questions=q.data||[];
+ const a=await supabase.from("answers").select("*,profiles(username)").order("created_at",{ascending:true});state.answers=a.data||[];
+ const s=await supabase.from("subjects").select("*").order("name");state.subjects=s.data||[];
+ const c=await supabase.from("courses").select("*,subjects(name),profiles(username)").order("created_at",{ascending:false});state.courses=c.data||[];
+ const l=await supabase.from("course_lessons").select("*").order("lesson_order");state.lessons=l.data||[];
+ const r=await supabase.from("resources").select("*,subjects(name),profiles(username)").order("created_at",{ascending:false});state.resources=r.data||[];
 }
-function pageHead(k,t,d){return '<div class="container page-title"><div class="eyebrow">'+k+'</div><h1>'+esc(t)+'</h1><p>'+esc(d)+'</p></div>'}
-async function community(){
-  $("#app").innerHTML=pageHead("COMMUNITY","讨论群","把不会的地方问出来，把有价值的解释留下来。")+'<section class="container content"><div class="panel"><div class="toolbar"><h2>Question Cards</h2><button id="ask" class="primary">＋ 提问</button></div><div id="questions"><div class="empty">正在加载……</div></div></div><div class="panel" style="margin-top:16px"><div class="toolbar"><h2>开放讨论</h2></div><div id="chat"><div class="empty">正在加载……</div></div></div></section>';
-  if(!sb)return;
-  const [q,m]=await Promise.all([sb.from("questions").select("*,profiles(username),subjects(name)").order("created_at",{ascending:false}),sb.from("messages").select("*,profiles(username)").eq("channel","general").order("created_at",{ascending:true}).limit(50)]);
-  $("#questions").innerHTML=(q.data||[]).map(x=>'<article class="question"><div class="meta">'+esc(x.profiles?.username||"成员")+' · '+esc(x.subjects?.name||sub(x.subject_id))+'</div><h3>'+esc(x.title)+'</h3><p>'+esc(x.content)+'</p></article>').join("")||'<div class="empty">还没有问题。</div>';
-  $("#chat").innerHTML=(m.data||[]).map(x=>'<div class="question"><b>'+esc(x.profiles?.username||"成员")+'</b><p>'+esc(x.content)+'</p></div>').join("")||'<div class="empty">还没有消息。</div>';
-  $("#ask").onclick=ask;
+function subscribeRealtime(){
+ supabase.channel("episteme-live")
+ .on("postgres_changes",{event:"*",schema:"public",table:"questions"},async()=>{await loadAll();render()})
+ .on("postgres_changes",{event:"*",schema:"public",table:"answers"},async()=>{await loadAll();if(route().startsWith("/question/")) render()})
+ .on("postgres_changes",{event:"INSERT",schema:"public",table:"messages"},payload=>{if(payload.new.channel==="general"){state.messages.push(payload.new);if(route()==="/community")renderChat()}})
+ .subscribe();
 }
-function ask(){
-  if(!user)return authPage();
-  $("#modal").innerHTML='<div class="modal-back"><div class="modal-box"><div class="modal-head"><h3>提出一个问题</h3><button id="x">×</button></div><form id="f" class="form"><input name="title" required placeholder="问题标题"><select name="subject">'+subjects.map(s=>'<option value="'+s.id+'">'+esc(s.name)+'</option>').join("")+'</select><textarea name="content" required placeholder="把你卡住的地方写下来……"></textarea><button class="primary">发布</button></form></div></div>';
-  $("#x").onclick=close;$("#f").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const r=await sb.from("questions").insert({author_id:user.id,subject_id:f.get("subject"),title:f.get("title"),content:f.get("content"),status:"unanswered"});if(r.error)toast(r.error.message);else{close();toast("问题已发布");community()}}
+function navActive(){document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.getAttribute("href")==="#"+route()))}
+function hero(k,t,d){return `<section class="page-hero"><div class="eyebrow">${k}</div><h1>${t}</h1><p>${d}</p></section>`}
+function home(){return `<section class="hero container"><div><div class="eyebrow">STUDENT-LED LEARNING COMMUNITY</div><h1>一起学习，<br>互相帮助，<br>让知识<strong>留下来。</strong></h1><p>Episteme 知屿是一个由高中生发起并主导的线上学习共同体。通过同伴授课、资源共享、答疑互助与 AI 辅助，我们希望让每一届学生都能给下一届留下更多知识。</p><div class="actions"><button class="primary" onclick="location.hash='#/community'">进入讨论群 →</button><button class="secondary" onclick="location.hash='#/library'">浏览资源库</button></div></div><div class="hero-art"><div class="sun"></div><div class="m1"></div><div class="m2"></div><div class="water"></div><div class="hero-logo"><img src="assets/logo.png"><b>Episteme 知屿</b><span>TRUE KNOWLEDGE BELONGS TO NO ONE.</span></div></div></section>
+<section class="loop"><div class="container"><div class="section-head"><div class="eyebrow">THE KNOWLEDGE LOOP</div><h2>Ask → Discuss → Understand → Preserve → Share</h2></div><div class="loop-grid">${[["01","Ask","提出真实遇到的问题。"],["02","Discuss","进入对应学科共同思考。"],["03","Understand","关注逻辑，而不只是答案。"],["04","Preserve","高价值问答整理为长期知识。"],["05","Share","让下一位学习者继续使用。"]].map(x=>`<div><i>${x[0]}</i><h3>${x[1]}</h3><p>${x[2]}</p></div>`).join("")}</div></div></section>
+<section class="container spaces"><div class="section-head"><div class="eyebrow">EXPLORE</div><h2>知屿里的三个空间</h2></div><div class="space-grid"><a class="space sage" href="#/community"><small>COMMUNITY</small><h3>讨论群</h3><p>提问、回答、实时讨论，以及 Question Card。</p><span>进入讨论 →</span></a><a class="space blue" href="#/courses"><small>COURSES</small><h3>录课</h3><p>同伴授课，帮助理解概念、原理和知识之间的联系。</p><span>观看录课 →</span></a><a class="space lav" href="#/library"><small>LIBRARY</small><h3>资源库</h3><p>笔记、讲义、真题、工具和高价值知识长期保存。</p><span>浏览资源 →</span></a></div></section>
+<section class="quote"><blockquote>“我们希望每一届学生离开时，都能给下一届留下比自己刚加入时更多的知识。”<cite>— EPISTEME 知屿</cite></blockquote></section>`}
+
+function community(){
+ if(!supabase)return setupNotice("COMMUNITY","讨论群","配置 Supabase 后，这里会自动变成真正的多人讨论区。");
+ return hero("COMMUNITY","讨论群","Question Card + 实时讨论。高价值讨论可以进一步进入 Knowledge Base。")+`<section class="container content"><div class="community-grid"><aside class="panel"><div class="eyebrow">CHANNELS</div>${["全部","Mathematics","Physics","Chemistry","Biology","English","Economics","History","Geography","Theatre & Arts","Music"].map((s,i)=>`<button class="channel ${i===0?"active":""}" data-sub="${s}"># ${s}</button>`).join("")}</aside><div class="panel"><div class="toolbar"><div><div class="eyebrow">QUESTION CARDS</div><h2>${state.questions.length} 个问题</h2></div><button class="primary" onclick="ask()">＋ 提问</button></div><div class="filters">${["全部","unanswered","discussing","answered","archived"].map((s,i)=>`<button class="filter ${i===0?"active":""}" data-status="${s}">${i?statusText[s]:"全部"}</button>`).join("")}</div><div id="questions">${questionList()}</div></div></div><div class="panel chat-panel"><div class="toolbar"><div><div class="eyebrow">GENERAL CHAT</div><h2>开放讨论</h2></div>${state.user?`<span class="online">● 已登录</span>`:`<button class="secondary" onclick="auth()">登录后参与讨论</button>`}</div><div id="chat">${chatHtml()}</div>${state.user?`<form id="chatForm" class="chat-form"><input name="content" placeholder="说点什么……"><button class="primary">发送</button></form>`:`<div class="empty">登录后可以发送消息。</div>`}</div></section>`;
 }
-async function library(){
-  $("#app").innerHTML=pageHead("RESOURCE LIBRARY","资源库","资料经过审核后公开。文件本体可以继续放在外部存储，Episteme 只保存索引。")+'<section class="container content"><div class="toolbar"><input id="search" class="field" placeholder="搜索资源……"><button id="upload" class="primary">＋ 上传</button></div><div id="resources" class="cards"><div class="empty">正在加载……</div></div></section>';
-  if(!sb)return;
-  const r=await sb.from("resources").select("*,subjects(name)").order("created_at",{ascending:false});
-  const draw=q=>{const d=(r.data||[]).filter(x=>(x.status==="approved"||x.uploader_id===user?.id)&&(!q||(x.title+" "+(x.description||"")+" "+sub(x.subject_id)).toLowerCase().includes(q.toLowerCase())));$("#resources").innerHTML=d.map(x=>'<article class="card resource"><div class="res-icon">R</div><div class="file-type">'+esc(x.resource_type)+' · '+esc(x.subjects?.name||sub(x.subject_id))+'</div><h3>'+esc(x.title)+'</h3><p>'+esc(x.description||"")+'</p><small>'+esc(x.status)+'</small><button class="resource-open" data-url="'+esc(x.external_url||"")+'">打开 →</button></article>').join("")||'<div class="empty">没有找到资源。</div>';$("#resources").querySelectorAll("[data-url]").forEach(b=>b.onclick=()=>b.dataset.url?window.open(b.dataset.url,"_blank","noopener,noreferrer"):toast("没有资源链接"))};
-  draw("");$("#search").oninput=e=>draw(e.target.value);$("#upload").onclick=resourceForm;
+function questionList(sub="全部",st="全部",query=""){let list=state.questions.filter(q=>(sub==="全部"||subjectName(q.subject_id)===sub)&&(st==="全部"||q.status===st));if(query)list=list.filter(q=>(q.title+" "+q.content+" "+subjectName(q.subject_id)).toLowerCase().includes(query.toLowerCase()));return list.length?list.map(q=>`<article class="question" onclick="location.hash='#/question/${q.id}'"><div class="meta">${esc(q.profiles?.username||"成员")} · ${fmtDate(q.created_at)} <span class="badge">${esc(subjectName(q.subject_id))}</span><span class="status">${esc(statusText[q.status])}</span></div><h3>${esc(q.title)}</h3><p>${esc(q.content)}</p><div class="qfoot">${state.answers.filter(a=>a.question_id===q.id).length} 条回答 · 点击查看</div></article>`).join(""):`<div class="empty">没有找到符合条件的问题。</div>`}
+function chatHtml(){return state.messages.length?state.messages.map(m=>`<div class="msg"><b>${esc(m.author_name||"成员")}</b><span>${fmtDate(m.created_at)}</span><p>${esc(m.content)}</p></div>`).join(""):`<div class="empty">还没有消息。登录后开始第一条讨论。</div>`}
+function renderChat(){const el=document.getElementById("chat");if(el)el.innerHTML=chatHtml()}
+async function loadChat(){if(!supabase||!state.user)return;const {data}=await supabase.from("messages").select("*,profiles(username)").eq("channel","general").order("created_at",{ascending:true}).limit(100);state.messages=(data||[]).map(m=>({...m,author_name:m.profiles?.username||"成员"}));renderChat()}
+async function ask(){if(!state.user){auth();return}modal("提出一个问题",`<form class="form" id="askForm"><label>问题标题<input name="title" required placeholder="例如：为什么这道题答案是 C？"></label><label>学科<select name="subject">${state.subjects.map(s=>`<option value="${s.id}">${esc(s.name)} ${s.code?`· ${esc(s.code)}`:""}</option>`).join("")}</select></label><label>Topic<input name="topic" placeholder="例如：Trigonometry / Forces / Symbolism"></label><label>具体问题<textarea name="content" required placeholder="写下你的思路、卡住的地方，以及已经尝试过什么。"></textarea></label><p class="help">提交后会生成 Question Card。后续可以由 AI 做学科 / Topic 初步分类，再由学科负责人确认。</p><button class="submit">发布问题</button></form>`);document.getElementById("askForm").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const {error}=await supabase.from("questions").insert({author_id:state.user.id,title:f.get("title"),content:f.get("content"),topic:f.get("topic"),subject_id:f.get("subject")});if(error)toast(error.message);else{closeModal();toast("Question Card 已创建");}}}
+function questionDetail(id){const q=state.questions.find(x=>x.id===id);if(!q)return `<div class="empty">问题不存在。</div>`;const ans=state.answers.filter(a=>a.question_id===id);return hero("QUESTION CARD",q.title,`${subjectName(q.subject_id)} · ${statusText[q.status]} · ${fmtDate(q.created_at)}`)+`<section class="container content"><div class="panel detail"><a class="back" href="#/community">← 返回讨论</a><p class="detail-body">${esc(q.content)}</p><div class="divider"></div><h2>回答 · ${ans.length}</h2><div>${ans.length?ans.map(a=>`<div class="answer"><div class="meta">${esc(a.profiles?.username||"成员")} · ${fmtDate(a.created_at)} ${a.is_verified?`<span class="verified">✓ 已确认</span>`:""}</div><p>${esc(a.content)}</p></div>`).join(""):`<div class="empty">还没有回答，成为第一个帮助他人的人。</div>`}</div>${state.user?`<form id="answerForm" class="form"><textarea name="content" required placeholder="写下你的解释……"></textarea><button class="submit">提交回答</button></form>`:`<div class="admin-note">登录后可以回答问题。</div>`}</div></section>`}
+function courses(){return hero("COURSES","录课","由学科负责人和成员提供课程，重点帮助学习者理解概念、原理和知识之间的逻辑。")+`<section class="container content"><div class="cards">${state.courses.length?state.courses.map(c=>`<article class="card" onclick="location.hash='#/course/${c.id}'"><div class="thumb ${c.subject_id%3===0?"lav":c.subject_id%2?"sage":"blue"}">${esc(c.title)}</div><div class="card-body"><span class="badge">${esc(subjectName(c.subject_id))}</span><h3>${esc(c.title)}</h3><p>${esc(c.description||"暂无简介")}</p><div class="card-meta">${esc(c.profiles?.username||"Episteme")}</div></div></article>`).join(""):`<div class="empty" style="grid-column:1/-1">暂时还没有公开课程。学科负责人登录后可以在后台添加。</div>`}</div></section>`}
+function courseDetail(id){const c=state.courses.find(x=>x.id===id);if(!c)return `<div class="container content"><div class="empty">课程不存在。</div></div>`;const ls=state.lessons.filter(x=>x.course_id===id);return hero("COURSE",c.title,`${subjectName(c.subject_id)} · ${c.profiles?.username||"Episteme"}`)+`<section class="container content"><div class="panel"><a class="back" href="#/courses">← 返回课程</a><div class="viewer"><div><video id="player" class="video" controls ${ls[0]?.video_url?`src="${esc(ls[0].video_url)}"`:""}></video>${!ls[0]?.video_url?`<div class="video-empty">课程视频链接尚未添加</div>`:""}<div class="course-info"><b>课程简介</b><p>${esc(c.description||"暂无简介")}</p></div></div><div class="lessons"><div class="eyebrow">LESSONS</div>${ls.length?ls.map((l,i)=>`<button class="lesson ${i===0?"active":""}" onclick="playLesson('${l.id}',this)"><span>${String(i+1).padStart(2,"0")} · ${esc(l.title)}</span><small>${l.duration_seconds?Math.round(l.duration_seconds/60)+" min":"○"}</small></button>`).join(""):`<div class="empty">还没有章节。</div>`}</div></div></div></section>`}
+window.playLesson=(id,btn)=>{const l=state.lessons.find(x=>x.id===id);document.querySelectorAll(".lesson").forEach(x=>x.classList.remove("active"));btn.classList.add("active");const v=document.getElementById("player");if(l?.video_url){v.src=l.video_url;v.play().catch(()=>{})}else toast("这一章节还没有视频链接")}
+function library(){return hero("RESOURCE LIBRARY","资源库","资源由社区共同建设，并经过对应学科负责人审核后进入正式共享资源库。")+`<section class="container content"><div class="toolbar"><div class="filters"><button class="filter active">全部</button><button class="filter">笔记</button><button class="filter">真题</button><button class="filter">讲义</button><button class="filter">工具</button></div><input class="searchbox" id="resSearch" placeholder="搜索资源……"></div><div class="cards" id="resources">${resourceList()}</div>${state.user&&["subject_manager","admin"].includes(state.profile?.role)?`<div style="margin-top:18px"><button class="primary" onclick="uploadResource()">＋ 上传资源</button></div>`:""}</section>`}
+function resourceList(q=""){
+ let list=state.resources.filter(r=>(r.status==="approved"||r.uploader_id===state.user?.id||["subject_manager","admin"].includes(state.profile?.role))&&(!q||(r.title+" "+(r.description||"")+" "+subjectName(r.subject_id)+" "+(r.topic||"")).toLowerCase().includes(q.toLowerCase())));
+ return list.length?list.map(r=>`<article class="card resource">
+ <div class="res-icon">${esc((r.resource_type||"FILE").slice(0,1).toUpperCase())}</div>
+ <div class="file-type">${esc(r.resource_type)} · ${esc(subjectName(r.subject_id))}${r.topic?` · ${esc(r.topic)}`:""}</div>
+ <h3>${esc(r.title)}</h3><p>${esc(r.description||"")}</p>
+ <small>${r.status==="approved"?"✓ 已审核":r.status==="pending"?"等待审核":"未通过审核"}</small>
+ ${r.external_url?`<div class="baidu-note">百度网盘资源${r.external_code?` · 提取码 ${esc(r.external_code)}`:""}</div>`:""}
+ <button class="resource-open" onclick="openResource('${r.id}')">${r.external_url?"阅读 →":"资源未绑定"}</button>
+ </article>`).join(""):`<div class="empty" style="grid-column:1/-1">没有找到相关资源。</div>`;
 }
-function resourceForm(){
-  if(!user)return authPage();
-  $("#modal").innerHTML='<div class="modal-back"><div class="modal-box"><div class="modal-head"><h3>提交资源</h3><button id="x">×</button></div><form id="f" class="form"><input name="title" required placeholder="资源标题"><select name="subject">'+subjects.map(s=>'<option value="'+s.id+'">'+esc(s.name)+'</option>').join("")+'</select><select name="type"><option value="note">笔记</option><option value="paper">真题</option><option value="handout">讲义</option><option value="tool">工具</option></select><input name="url" type="url" required placeholder="百度网盘 / Notion / 其他资源链接"><textarea name="description" placeholder="资源说明"></textarea><button class="primary">提交审核</button></form></div></div>';
-  $("#x").onclick=close;$("#f").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target),r=await sb.from("resources").insert({title:f.get("title"),subject_id:f.get("subject"),resource_type:f.get("type"),external_url:f.get("url"),description:f.get("description"),uploader_id:user.id,status:"pending",file_path:null});if(r.error)toast(r.error.message);else{close();toast("已进入审核队列");library()}}
+function openResource(id){
+ const r=state.resources.find(x=>x.id===id);if(!r)return;
+ const url=r.external_url;
+ if(!url){toast("这个资源还没有绑定百度网盘链接");return}
+ window.open(url,"_blank","noopener,noreferrer");
 }
-async function courses(){
-  $("#app").innerHTML=pageHead("COURSES","录课","按学科观看课程，视频保留在 Bilibili 等外部平台。")+'<section class="container content"><div id="courses" class="cards"><div class="empty">正在加载……</div></div></section>';
-  if(!sb)return;
-  const r=await sb.from("courses").select("*,subjects(name)").eq("status","published").eq("is_hidden",false).order("created_at",{ascending:false});
-  $("#courses").innerHTML=(r.data||[]).map(c=>'<article class="card" data-course="'+c.id+'"><div class="thumb sage">'+esc(c.subjects?.name||sub(c.subject_id))+'</div><div class="card-body"><h3>'+esc(c.title)+'</h3><p>'+esc(c.description||"")+'</p></div></article>').join("")||'<div class="empty">暂时没有公开课程。</div>';
-  $("#courses").querySelectorAll("[data-course]").forEach(x=>x.onclick=()=>location.hash="/course/"+x.dataset.course)
+function uploadResource(){
+ if(!state.user)return auth();
+ modal("添加资源",`<form class="form" id="resForm">
+ <label>标题<input name="title" required placeholder="例如：Chemical Equilibrium Notes"></label>
+ <label>学科<select name="subject">${state.subjects.map(s=>`<option value="${s.id}">${esc(s.name)}${s.code?` · ${esc(s.code)}`:""}</option>`).join("")}</select></label>
+ <label>Topic<input name="topic" placeholder="例如：Equilibrium / Forces / Algebra"></label>
+ <label>类型<select name="type"><option value="note">笔记</option><option value="paper">真题</option><option value="handout">讲义</option><option value="tool">工具</option><option value="other">其他</option></select></label>
+ <label>百度网盘分享链接<input name="url" type="url" required placeholder="粘贴百度网盘分享链接"></label>
+ <label>提取码（如有）<input name="code" maxlength="20" placeholder="例如：a1b2"></label>
+ <label>说明<textarea name="description" placeholder="简要说明这个资源适合谁、包含什么内容。"></textarea></label>
+ <p class="help">文件本体不会上传到 Episteme。百度网盘负责存储和预览，Episteme 只保存资源信息与链接，因此页面更轻。</p>
+ <button class="submit">提交审核</button></form>`);
+ document.getElementById("resForm").onsubmit=async e=>{
+  e.preventDefault();const f=new FormData(e.target);
+  const url=String(f.get("url")||"").trim();
+  if(!/^https?:\/\//i.test(url))return toast("请输入有效的百度网盘链接");
+  const ins=await supabase.from("resources").insert({
+   title:f.get("title"),description:f.get("description"),subject_id:f.get("subject"),
+   topic:f.get("topic"),resource_type:f.get("type"),external_url:url,external_code:f.get("code")||null,
+   file_path:null,uploader_id:state.user.id,status:"pending"
+  });
+  if(ins.error)toast(ins.error.message);else{closeModal();toast("资源已提交，等待审核");await loadAll();render()}
+ }
 }
-async function course(id){
-  const [c,l]=await Promise.all([sb.from("courses").select("*,subjects(name)").eq("id",id).maybeSingle(),sb.from("course_lessons").select("*").eq("course_id",id).order("lesson_order")]);
-  const d=c.data,ls=l.data||[];if(!d)return home();
-  $("#app").innerHTML=pageHead("COURSE",d.title,(d.subjects?.name||sub(d.subject_id)))+'<section class="container content"><div class="panel"><div id="player" class="player"></div><div class="course-info"><b>课程简介</b><p>'+esc(d.description||"暂无简介")+'</p></div><div class="list" style="margin-top:15px">'+ls.map(x=>'<div class="row"><b>'+esc(x.title)+'</b><button class="ghost" data-video="'+esc(x.video_url||"")+'">播放</button></div>').join("")+'</div></div></section>';
-  $("#app").querySelectorAll("[data-video]").forEach(b=>b.onclick=()=>play(b.dataset.video));
-}
-function play(url){let m=String(url).match(/BV[0-9A-Za-z]+/i);let u=m?"https://player.bilibili.com/player.html?bvid="+m[0]+"&page=1":url;$("#player").innerHTML=u?'<iframe src="'+esc(u)+'" allowfullscreen></iframe>':'<div class="empty">没有视频链接。</div>'}
-function about(){ $("#app").innerHTML=pageHead("ABOUT EPISTEME","关于知屿","True knowledge belongs to no one.")+'<section class="container content"><div class="about-grid"><div class="about-card"><h3>我们是谁</h3><p>一个由学生发起并主导的学习共同体，通过同伴授课、资源共享和答疑互助，让知识可以被长期保存。</p></div><div class="about-card"><h3>我们相信</h3><p>学习不只是得到答案，更是理解答案为什么成立，并把这种理解分享给下一位学习者。</p></div></div></section>'}
-function authPage(){
-  if(user){$("#modal").innerHTML='<div class="modal-back"><div class="modal-box"><div class="modal-head"><h3>我的账号</h3><button id="x">×</button></div><div class="account"><div class="avatar">'+esc((profile?.username||"U")[0])+'</div><h3>'+esc(profile?.username||"Member")+'</h3><p>'+esc(user.email||"")+'</p><p>角色：'+esc(profile?.role||"member")+'</p>'+(["coordinator","subject_manager"].includes(profile?.role)?'<a class="submit" href="admin.html" style="display:block">进入后台</a>':"")+'<button id="out" class="submit">退出登录</button></div></div></div>';$("#x").onclick=close;$("#out").onclick=async()=>{await sb.auth.signOut();user=null;profile=null;close();location.hash="/"};return}
-  $("#app").innerHTML=pageHead("ACCOUNT","登录 / 注册","进入 Episteme 知屿。")+'<section class="container content"><div class="card" style="max-width:470px"><form id="authForm" class="form"><input name="username" placeholder="用户名（注册时填写）"><input name="email" type="email" required placeholder="邮箱"><input name="password" type="password" required placeholder="密码"><div class="actions-row"><button class="primary" id="login">登录</button><button class="secondary" id="signup">注册</button></div><div id="msg" class="meta"></div></form></div></section>';
-  $("#login").onclick=async e=>{e.preventDefault();const f=new FormData($("#authForm"));const r=await sb.auth.signInWithPassword({email:f.get("email"),password:f.get("password")});if(r.error)$("#msg").textContent=r.error.message;else{user=r.data.user;location.hash="/";boot()}};$("#signup").onclick=async e=>{e.preventDefault();const f=new FormData($("#authForm"));const r=await sb.auth.signUp({email:f.get("email"),password:f.get("password"),options:{emailRedirectTo:new URL("auth.html",location.href).href,data:{username:f.get("username")||f.get("email").split("@")[0],language:"en"}}});$("#msg").textContent=r.error?r.error.message:"注册成功，请检查邮箱。"}
-}
-async function admin(){
-  if(!profile||!["coordinator","subject_manager"].includes(profile.role)){layoutAdmin("无权限");return}
-  $("#app").innerHTML='<section class="container section"><div class="eyebrow">ADMIN CONSOLE</div><h2>管理后台</h2><div class="admin-tabs"><button class="ghost active" data-tab="review">资料审核</button><button class="ghost" data-tab="jobs">岗位管理</button><button class="ghost" data-tab="courses">课程</button></div><div class="admin-grid"><div id="left" class="admin-panel"></div><div id="right" class="admin-panel"><div class="reader-empty"><b>选择资料</b><span>审核时可以在这里预览。</span></div></div></div></section>';
-  document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>{document.querySelectorAll("[data-tab]").forEach(x=>x.classList.remove("active"));b.classList.add("active");b.dataset.tab==="review"?review():b.dataset.tab==="jobs"?jobs():courseAdmin()});review();
-}
-function layoutAdmin(t){$("#app").innerHTML='<section class="container section"><h2>'+esc(t)+'</h2><p>该页面只对学科负责人开放。</p></section>'}
-async function review(){
-  const r=await sb.from("library_items").select("*,subjects(name)").in("status",["pending","rereview"]).order("created_at");const d=r.data||[];
-  $("#left").innerHTML='<div class="admin-head"><b>待审核</b><div class="meta">通过 / 重审 / 驳回</div></div>'+(d.length?d.map(x=>'<div class="admin-item" data-item="'+x.id+'"><strong>'+esc(x.name)+'</strong><small>'+esc(x.subjects?.name||"")+'</small><div class="admin-actions"><button class="ghost" data-r="'+x.id+'" data-s="approved">通过</button><button class="ghost" data-r="'+x.id+'" data-s="rereview">重审</button><button class="ghost danger" data-r="'+x.id+'" data-s="rejected">驳回</button></div></div>').join(""):'<div class="empty">没有待审核资料。</div>');
-  document.querySelectorAll("[data-r]").forEach(b=>b.onclick=async e=>{e.stopPropagation();const r=await sb.rpc("review_library_item",{p_item_id:b.dataset.r,p_status:b.dataset.s});if(r.error)toast(r.error.message);else review()});
-  d.forEach(x=>document.querySelector('[data-item="'+x.id+'"]')?.addEventListener("click",()=>{const u=x.external_url||x.storage_path;$("#right").innerHTML=u?'<div class="reader-head"><b>'+esc(x.name)+'</b></div><div class="reader-body"><iframe src="'+esc(u)+'"></iframe></div>':'<div class="reader-empty">没有可预览地址。</div>'}))
-}
-async function jobs(){
-  if(profile.role!=="coordinator")return $("#left").innerHTML='<div class="empty">只有 coordinator 可以管理岗位。</div>';
-  const r=await sb.from("manager_invites").select("*").eq("role","subject_manager").order("created_at"),d=r.data||[];
-  $("#left").innerHTML='<div class="admin-head"><b>学科负责人岗位</b><div class="meta">负责人 + 邀请码 + 岗位名称</div></div>'+d.map(x=>'<div class="job"><div class="job-top"><h3>'+esc(x.name||"未领取")+'</h3><span class="badge">'+(x.active?"active":"inactive")+'</span></div><p>邀请码：'+esc(x.code)+'</p><input data-job="'+x.id+'" value="'+esc(x.label||"学科负责人")+'"><button class="ghost job-save" data-save="'+x.id+'">保存岗位名称</button></div>').join("");
-  document.querySelectorAll("[data-save]").forEach(b=>b.onclick=async()=>{const i=document.querySelector('[data-job="'+b.dataset.save+'"]'),r=await sb.from("manager_invites").update({label:i.value}).eq("id",b.dataset.save);if(r.error)toast(r.error.message);else toast("岗位名称已更新")})
-}
-async function courseAdmin(){const r=await sb.from("courses").select("*,subjects(name)").order("created_at",{ascending:false});$("#left").innerHTML='<div class="admin-head"><b>课程</b></div>'+((r.data||[]).map(x=>'<div class="admin-item"><strong>'+esc(x.title)+'</strong><small>'+esc(x.subjects?.name||"")+' · '+esc(x.course_type)+' · '+esc(x.status)+'</small></div>').join("")||'<div class="empty">暂无课程。</div>')}
-document.getElementById("authBtn")?.addEventListener("click",authPage);
-document.getElementById("searchBtn")?.addEventListener("click",()=>toast("搜索入口下一步统一接入"));
-document.getElementById("menuBtn")?.addEventListener("click",()=>document.getElementById("mobileNav").classList.toggle("open"));
-window.addEventListener("hashchange",render);boot();
+function about(){return hero("ABOUT EPISTEME","关于知屿","True knowledge belongs to no one.")+`<section class="container content"><div class="about-grid"><article class="about-card"><h3>我们是谁</h3><p>Episteme 知屿是一个由高中生发起并主导的线上学习共同体。通过同伴授课、资源共享、答疑互助，并结合 AI 工具辅助学习，致力于打破信息壁垒、缩小教育资源差距。</p></article><article class="about-card"><h3>为什么需要知屿</h3><p>有效信息容易在群聊中被淹没，优质资源也难以整合共享。我们希望把一次性的帮助变成可以长期保存、跨年级传承的知识。</p></article><article class="about-card"><h3>Mission</h3><p>让更多学生能够获得可靠、可及的学习资源，并通过同伴互助共同成长。</p></article><article class="about-card"><h3>Vision</h3><p>建立一个可以不断积累知识、跨年级传承，并由学生自己持续维护的学习共同体。</p></article></div><div class="panel values-panel"><div class="eyebrow">CORE VALUES</div><h2>Share · Collaborate · Understand · Preserve</h2><div class="values">${[["Share","知识不应该因为拥有者不同而产生壁垒。"],["Collaborate","学习不应该只有竞争，也可以通过合作共同进步。"],["Understand","我们不仅关注答案，更关注问题背后的逻辑。"],["Preserve","有价值的讨论不应该随着聊天记录被刷掉。"]].map(x=>`<div><b>${x[0]}</b><p>${x[1]}</p></div>`).join("")}</div></div></section>`}
+function setupNotice(k,t){return hero(k,t,"当前前端已经完成。只需在 config.js 填入 Supabase URL + Publishable Key，再运行 SQL，即可开启真正的动态功能。")+`<section class="container content"><div class="panel setup"><h2>还差最后一步配置</h2><ol><li>创建 Supabase 项目</li><li>在 SQL Editor 运行项目里的 <code>supabase/schema.sql</code></li><li>打开 <code>config.js</code>，填写 Project URL 和 Publishable Key</li><li>把整个文件夹上传 GitHub Pages</li></ol><p>不需要服务器，不需要 Node.js。GitHub Pages 继续负责网站，Supabase 负责数据库、登录、实时消息和资源存储。</p></div></section>`}
+function auth(){modal(state.user?"我的账号":"登录 / 注册",state.user?`<div class="account"><div class="avatar">${esc((state.profile?.username||"U")[0].toUpperCase())}</div><h3>${esc(state.profile?.username||"Member")}</h3><p>${esc(state.user.email||"")}</p><p class="help">角色：${esc(state.profile?.role||"student")}</p><button class="submit" id="logout">退出登录</button></div>`:`<div class="auth-tabs"><button class="filter active" id="loginTab">登录</button><button class="filter" id="signupTab">注册</button></div><form class="form" id="authForm"><label>昵称<input name="username" placeholder="注册时填写"></label><label>邮箱<input type="email" name="email" required></label><label>密码<input type="password" name="password" minlength="6" required></label><p class="help">第一版使用 Supabase Auth。密码不会存进 Episteme 自己的数据库。</p><button class="submit">继续</button></form>`);if(state.user){document.getElementById("logout").onclick=async()=>{await supabase.auth.signOut();closeModal();toast("已退出");location.hash="#/"};return}let mode="login";document.getElementById("loginTab").onclick=()=>{mode="login";document.getElementById("signupTab").classList.remove("active");document.getElementById("loginTab").classList.add("active")};document.getElementById("signupTab").onclick=()=>{mode="signup";document.getElementById("loginTab").classList.remove("active");document.getElementById("signupTab").classList.add("active")};document.getElementById("authForm").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);let res;if(mode==="signup")res=await supabase.auth.signUp({email:f.get("email"),password:f.get("password"),options:{data:{username:f.get("username")||f.get("email").split("@")[0]}}});else res=await supabase.auth.signInWithPassword({email:f.get("email"),password:f.get("password")});if(res.error)toast(res.error.message);else{closeModal();toast(mode==="signup"?"注册成功，请检查邮箱（如开启邮箱确认）":"登录成功")}}}
+async function render(){navActive();const r=route();const main=document.getElementById("main");if(r==="/")main.innerHTML=home();else if(r==="/community")main.innerHTML=community();else if(r.startsWith("/question/"))main.innerHTML=questionDetail(r.split("/")[2]);else if(r==="/courses")main.innerHTML=courses();else if(r.startsWith("/course/"))main.innerHTML=courseDetail(r.split("/")[2]);else if(r==="/library")main.innerHTML=library();else if(r==="/about")main.innerHTML=about();else main.innerHTML=home();bind();if(r==="/community")await loadChat();if(r.startsWith("/question/"))bindAnswer(r.split("/")[2])}
+function bind(){document.querySelectorAll(".channel").forEach(b=>b.onclick=()=>{document.querySelectorAll(".channel").forEach(x=>x.classList.remove("active"));b.classList.add("active");const st=document.querySelector(".filter.active")?.dataset.status||"全部";document.getElementById("questions").innerHTML=questionList(b.dataset.sub,st,state.query)});document.querySelectorAll(".filter[data-status]").forEach(b=>b.onclick=()=>{document.querySelectorAll(".filter[data-status]").forEach(x=>x.classList.remove("active"));b.classList.add("active");const sub=document.querySelector(".channel.active")?.dataset.sub||"全部";document.getElementById("questions").innerHTML=questionList(sub,b.dataset.status,state.query)});const cf=document.getElementById("chatForm");if(cf)cf.onsubmit=async e=>{e.preventDefault();const content=new FormData(cf).get("content");if(!content?.trim())return;const {error}=await supabase.from("messages").insert({channel:"general",author_id:state.user.id,content:content.trim()});if(error)toast(error.message);else cf.reset()};const rs=document.getElementById("resSearch");if(rs)rs.oninput=e=>document.getElementById("resources").innerHTML=resourceList(e.target.value);const search=document.getElementById("globalSearch");if(search)search.oninput=globalSearch}
+function bindAnswer(id){const f=document.getElementById("answerForm");if(f)f.onsubmit=async e=>{e.preventDefault();const content=new FormData(f).get("content");const {error}=await supabase.from("answers").insert({question_id:id,author_id:state.user.id,content});if(error)toast(error.message);else{await supabase.from("questions").update({status:"discussing"}).eq("id",id);f.reset();toast("回答已提交")}}}
+function globalSearch(e){const q=e.target.value.trim().toLowerCase();const box=document.getElementById("searchResults");if(!q){box.innerHTML="";return}const arr=[...state.questions.map(x=>({t:x.title,k:"Question Card",h:"#/question/"+x.id})),...state.courses.map(x=>({t:x.title,k:"Course",h:"#/course/"+x.id})),...state.resources.map(x=>({t:x.title,k:"Resource",h:"#/library"}))].filter(x=>x.t.toLowerCase().includes(q)).slice(0,10);box.innerHTML=arr.length?arr.map(x=>`<a href="${x.h}"><b>${esc(x.t)}</b><small>${x.k}</small></a>`).join(""):`<div class="empty">没有找到结果。</div>`}
+document.getElementById("authBtn").onclick=auth;
+document.getElementById("searchBtn").onclick=()=>document.getElementById("searchPanel").classList.add("open");
+document.getElementById("closeSearch").onclick=()=>document.getElementById("searchPanel").classList.remove("open");
+document.getElementById("menuBtn").onclick=()=>document.getElementById("mobileNav").classList.toggle("open");
+document.querySelectorAll("#mobileNav a").forEach(a=>a.onclick=()=>document.getElementById("mobileNav").classList.remove("open"));
+window.addEventListener("hashchange",render);
+boot();
